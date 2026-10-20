@@ -14,6 +14,7 @@ from .config import Settings
 
 SESSION_FILE = "session.json"
 AUDIO_FILE = "recording.flac"
+RESPONSE_FILE = "deepgram_response.json"
 
 
 @dataclass
@@ -23,6 +24,8 @@ class SessionMeta:
     tracks: dict = field(default_factory=dict)  # name -> {path, rate, channels, first_frame_time}
     duration_seconds: float = 0.0
     channels: int = 0
+    participants: str = ""  # names typed before or during the call
+    speaker_names: dict = field(default_factory=dict)  # "Speaker 1" -> "Sarah", set after the call
 
     def save(self, folder: Path):
         (folder / SESSION_FILE).write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
@@ -39,6 +42,16 @@ def tracks_to_meta(tracks: dict) -> dict:
                "first_frame_time": t.first_frame_time}
         for name, t in tracks.items()
     }
+
+
+def speaker_samples(folder: Path, limit: int = 3) -> dict[str, list[str]]:
+    """A few lines from each speaker, to help the person put names to them."""
+    samples: dict[str, list[str]] = {}
+    for seg in transcribe.load_segments(folder / "transcript.json"):
+        lines = samples.setdefault(seg.speaker, [])
+        if len(lines) < limit:
+            lines.append(seg.text if len(seg.text) <= 140 else seg.text[:137] + "...")
+    return samples
 
 
 def new_session_dir(settings: Settings, context: str) -> Path:
@@ -91,18 +104,31 @@ def process_session(folder: Path, settings: Settings,
             for track in meta.tracks.values():
                 (folder / track["path"]).unlink(missing_ok=True)
 
-    segments_path = folder / "transcript.json"
-    if not segments_path.exists():
+    response_path = folder / RESPONSE_FILE
+    if not response_path.exists():
         log("Transcribing...")
         data = transcribe.request_transcript(audio_path, settings.deepgram_api_key,
                                              settings.language, meta.channels)
-        (folder / "deepgram_response.json").write_text(json.dumps(data), encoding="utf-8")
-        segments = transcribe.parse_response(data, meta.channels, settings.user_name)
-        transcribe.save_segments(segments, segments_path)
-        title = f"Transcript, {meta.started}"
-        (folder / "transcript.md").write_text(transcribe.to_markdown(segments, title),
-                                              encoding="utf-8")
-    segments = transcribe.load_segments(segments_path)
+        response_path.write_text(json.dumps(data), encoding="utf-8")
+    # Parsing is cheap, so it is redone every time; reprocessing an old call
+    # picks up improvements to speaker handling without paying to transcribe again.
+    data = json.loads(response_path.read_text(encoding="utf-8"))
+    segments = transcribe.parse_response(data, meta.channels, settings.user_name)
+    recording_note = ""
+    if meta.channels > 1 and not any(w.channel == 1 for w in transcribe.extract_words(data)):
+        recording_note = (
+            "No speech was heard on the call-audio channel, so every line came through "
+            f"{settings.user_name}'s microphone. Other people's words are probably labelled "
+            f"as {settings.user_name}."
+        )
+        log("Warning: no speech was heard from the call audio, only from your microphone. "
+            "Check that 'Call audio from' is the device you hear the call through. "
+            "Calls on your phone can't be captured.")
+    transcribe.save_segments(segments, folder / "transcript.json")
+    segments = transcribe.rename_speakers(segments, meta.speaker_names)
+    title = f"Transcript, {meta.started}"
+    (folder / "transcript.md").write_text(transcribe.to_markdown(segments, title),
+                                          encoding="utf-8")
     if not segments:
         raise RuntimeError("No speech was detected in the recording.")
 
@@ -114,6 +140,8 @@ def process_session(folder: Path, settings: Settings,
         model=settings.claude_model,
         user_name=settings.user_name,
         context=meta.context,
+        participants=meta.participants,
+        recording_note=recording_note,
         recorded_at=meta.started,
         duration=_duration_text(meta.duration_seconds),
     )

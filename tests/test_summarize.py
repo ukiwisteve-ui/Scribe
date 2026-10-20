@@ -46,3 +46,12 @@ def test_summarize_request_and_text(monkeypatch):
     assert "server-side-fallback-2026-07-01" in seen["beta"]
     assert "Weekly sync" in body["messages"][0]["content"]
     assert "Steve: Hi" in body["messages"][0]["content"]
+
+
+def test_prompt_includes_participants_and_recording_note():
+    prompt = summarize.build_prompt("[00:00:01] Steve: Hi", "Steve", "", "2026-10-20 09:00",
+                                    "1 min", participants="Sarah, Tom",
+                                    recording_note="Call audio was silent.")
+    assert "Who was on the call, according to Steve: Sarah, Tom" in prompt
+    assert "Recording note: Call audio was silent." in prompt
+    assert "Recording note" not in summarize.build_prompt("x", "Steve", "", "t", "1 min")

@@ -17,6 +17,9 @@ from .config import APP_DIR, Settings
 
 NO_MIC = "(don't record my microphone)"
 
+# Warn while recording when a track has carried no sound for this long.
+SILENCE_WARNING_SECONDS = 45
+
 
 def open_path(path: Path):
     if sys.platform == "win32":
@@ -40,8 +43,8 @@ class ScribeApp:
         self.busy = False
 
         root.title("Scribe")
-        root.geometry("560x560")
-        root.minsize(480, 480)
+        root.geometry("680x640")
+        root.minsize(660, 560)
         self._build()
         self._load_devices()
         self._check_keys()
@@ -71,8 +74,14 @@ class ScribeApp:
         self.context_text = tk.Text(frame, height=4, wrap="word")
         self.context_text.grid(row=2, column=1, sticky="ew", **pad)
 
+        ttk.Label(frame, text="Who's on the call?\n(optional, e.g. Sarah, Tom from Acme)",
+                  justify="left").grid(row=3, column=0, sticky="nw", **pad)
+        self.participants_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=self.participants_var).grid(
+            row=3, column=1, sticky="ew", **pad)
+
         meters = ttk.Frame(frame)
-        meters.grid(row=3, column=0, columnspan=2, sticky="ew", **pad)
+        meters.grid(row=4, column=0, columnspan=2, sticky="ew", **pad)
         meters.columnconfigure(1, weight=1)
         ttk.Label(meters, text="Call").grid(row=0, column=0, sticky="w")
         self.system_meter = ttk.Progressbar(meters, maximum=1.0)
@@ -80,16 +89,19 @@ class ScribeApp:
         ttk.Label(meters, text="Mic").grid(row=1, column=0, sticky="w")
         self.mic_meter = ttk.Progressbar(meters, maximum=1.0)
         self.mic_meter.grid(row=1, column=1, sticky="ew", padx=8, pady=2)
+        self.warning_label = ttk.Label(meters, text="", foreground="#b00020", wraplength=480,
+                                       justify="left")
+        self.warning_label.grid(row=2, column=0, columnspan=2, sticky="w")
 
         controls = ttk.Frame(frame)
-        controls.grid(row=4, column=0, columnspan=2, sticky="ew", **pad)
+        controls.grid(row=5, column=0, columnspan=2, sticky="ew", **pad)
         self.record_button = ttk.Button(controls, text="Start recording", command=self._toggle)
         self.record_button.pack(side="left")
         self.timer_label = ttk.Label(controls, text="00:00:00", font=("Segoe UI", 14))
         self.timer_label.pack(side="left", padx=16)
 
         actions = ttk.Frame(frame)
-        actions.grid(row=5, column=0, columnspan=2, sticky="ew", **pad)
+        actions.grid(row=6, column=0, columnspan=2, sticky="ew", **pad)
         self.summary_button = ttk.Button(actions, text="Open notes", state="disabled",
                                          command=lambda: self._open_file("summary.md"))
         self.summary_button.pack(side="left")
@@ -99,13 +111,16 @@ class ScribeApp:
         self.folder_button = ttk.Button(actions, text="Open folder", state="disabled",
                                         command=lambda: open_path(self.session_dir))
         self.folder_button.pack(side="left")
+        self.names_button = ttk.Button(actions, text="Name speakers...", state="disabled",
+                                       command=self._name_speakers)
+        self.names_button.pack(side="left", padx=6)
         ttk.Button(actions, text="Reprocess a session...",
                    command=self._reprocess).pack(side="right")
 
         self.log_text = tk.Text(frame, height=10, wrap="word", state="disabled",
                                 background="#f4f4f4", relief="flat")
-        self.log_text.grid(row=6, column=0, columnspan=2, sticky="nsew", **pad)
-        frame.rowconfigure(6, weight=1)
+        self.log_text.grid(row=7, column=0, columnspan=2, sticky="nsew", **pad)
+        frame.rowconfigure(7, weight=1)
 
     def _load_devices(self):
         try:
@@ -157,24 +172,28 @@ class ScribeApp:
         self.record_button.configure(text="Stop and summarise")
         self.output_box.configure(state="disabled")
         self.mic_box.configure(state="disabled")
-        for button in (self.summary_button, self.transcript_button):
+        for button in (self.summary_button, self.transcript_button, self.names_button):
             button.configure(state="disabled")
         self.folder_button.configure(state="normal")
         self._log(f"Recording to {self.session_dir}")
 
     def _stop(self):
-        tracks = self.recorder.stop()
+        self._save_meta(self.recorder.stop())
         self.recorder = None
-        self.meta.context = self.context_text.get("1.0", "end").strip()
-        self.meta.tracks = pipeline.tracks_to_meta(tracks)
-        self.meta.save(self.session_dir)
         self.record_button.configure(text="Start recording")
         self.output_box.configure(state="readonly")
         self.mic_box.configure(state="readonly")
         self.system_meter["value"] = 0
         self.mic_meter["value"] = 0
+        self.warning_label.configure(text="")
         self._log("Recording stopped.")
         self._process(self.session_dir)
+
+    def _save_meta(self, tracks: dict):
+        self.meta.context = self.context_text.get("1.0", "end").strip()
+        self.meta.participants = self.participants_var.get().strip()
+        self.meta.tracks = pipeline.tracks_to_meta(tracks)
+        self.meta.save(self.session_dir)
 
     # Processing
 
@@ -209,6 +228,63 @@ class ScribeApp:
         self._log(f"Reprocessing {folder}")
         self._process(folder)
 
+    def _name_speakers(self):
+        if self.busy or not self.session_dir:
+            return
+        folder = self.session_dir
+        samples = pipeline.speaker_samples(folder)
+        if not samples:
+            return
+        meta = pipeline.SessionMeta.load(folder)
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Name speakers")
+        dialog.transient(self.root)
+        body = ttk.Frame(dialog, padding=12)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        ttk.Label(body, text="Type a name for each speaker, then press Save. "
+                  "The transcript and notes are redone with the names.",
+                  wraplength=460, justify="left").grid(row=0, column=0, columnspan=2,
+                                                      sticky="w", pady=(0, 8))
+        entries = {}
+        for row, (label, lines) in enumerate(samples.items(), start=1):
+            ttk.Label(body, text=label, font=("Segoe UI", 10, "bold")).grid(
+                row=row * 2 - 1, column=0, sticky="w", pady=(8, 0))
+            var = tk.StringVar(value=meta.speaker_names.get(label, ""))
+            ttk.Entry(body, textvariable=var).grid(row=row * 2 - 1, column=1, sticky="ew",
+                                                   padx=(8, 0), pady=(8, 0))
+            quote = "\n".join(f"\u201c{line}\u201d" for line in lines)
+            ttk.Label(body, text=quote, foreground="#555", wraplength=460,
+                      justify="left").grid(row=row * 2, column=0, columnspan=2, sticky="w")
+            entries[label] = var
+
+        def save():
+            meta.speaker_names = {label: var.get().strip() for label, var in entries.items()
+                                  if var.get().strip() and var.get().strip() != label}
+            meta.save(folder)
+            dialog.destroy()
+            self._log("Updating the transcript and notes with the new names...")
+            self._process(folder)
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=len(samples) * 2 + 1, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right")
+        ttk.Button(buttons, text="Save", command=save).pack(side="right", padx=6)
+        dialog.grab_set()
+
+    def _silence_warning(self) -> str:
+        silent = self.recorder.silent_for()
+        warnings = []
+        if silent.get("system", 0) > SILENCE_WARNING_SECONDS:
+            warnings.append("No sound from the call for a while. If people are talking, check "
+                            "that 'Call audio from' is the speakers or headset you hear them "
+                            "through. Calls taken on your phone can't be recorded.")
+        if silent.get("mic", 0) > SILENCE_WARNING_SECONDS:
+            warnings.append("Your microphone has been silent for a while. Check 'My microphone' "
+                            "and that you aren't muted.")
+        return "\n".join(warnings)
+
     def _open_file(self, name: str):
         path = self.session_dir / name if self.session_dir else None
         if path and path.exists():
@@ -224,6 +300,7 @@ class ScribeApp:
             levels = self.recorder.levels()
             self.system_meter["value"] = levels.get("system", 0)
             self.mic_meter["value"] = levels.get("mic", 0)
+            self.warning_label.configure(text=self._silence_warning())
         while True:
             try:
                 kind, payload = self.events.get_nowait()
@@ -236,6 +313,7 @@ class ScribeApp:
                 self.record_button.configure(state="normal")
                 self.summary_button.configure(state="normal")
                 self.transcript_button.configure(state="normal")
+                self.names_button.configure(state="normal")
                 self._open_file("summary.md")
             elif kind == "error":
                 self.busy = False
@@ -257,10 +335,7 @@ class ScribeApp:
             if not messagebox.askyesno("Scribe", "Recording in progress. Stop and quit? "
                                        "The audio is kept and can be processed later."):
                 return
-            tracks = self.recorder.stop()
-            self.meta.context = self.context_text.get("1.0", "end").strip()
-            self.meta.tracks = pipeline.tracks_to_meta(tracks)
-            self.meta.save(self.session_dir)
+            self._save_meta(self.recorder.stop())
         self.root.destroy()
 
 

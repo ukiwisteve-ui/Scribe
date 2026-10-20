@@ -12,7 +12,12 @@ names spelled phonetically, and occasional lines attributed to the wrong speaker
 Use context to read through those errors. Speaker labels like "Speaker 1" are \
 anonymous: if the conversation makes it clear who someone is (they are greeted by \
 name, introduce themselves, or are addressed directly), use their name and say how \
-you identified them. Never invent facts, owners, or deadlines that the call does not \
+you identified them. When the recorder lists who was on the call, match the labels \
+to those names using what each speaker says and is called; if a match is a guess, \
+say so. Speaker separation is imperfect: one label can occasionally hold two people, \
+or one person can appear under two labels. Where a line plainly belongs to someone \
+else (a reply attributed to the person being answered), attribute it correctly in \
+the notes. Never invent facts, owners, or deadlines that the call does not \
 support; when something is unclear, say so.
 
 Write in plain, direct British English. Do not use em dashes."""
@@ -48,15 +53,18 @@ recapping decisions and actions."""
 
 
 def build_prompt(transcript: str, user_name: str, context: str, recorded_at: str,
-                 duration: str) -> str:
+                 duration: str, participants: str = "", recording_note: str = "") -> str:
     context_block = context.strip() or "(none given)"
+    participants_block = participants.strip() or "(not given)"
+    note_line = f"Recording note: {recording_note}\n" if recording_note else ""
     return f"""\
 <call_details>
 Recorded by: {user_name} (their microphone is labelled "{user_name}" in the transcript)
 Recorded at: {recorded_at}
 Duration: {duration}
 Context from {user_name}: {context_block}
-</call_details>
+Who was on the call, according to {user_name}: {participants_block}
+{note_line}</call_details>
 
 <transcript>
 {transcript}
@@ -66,9 +74,11 @@ Context from {user_name}: {context_block}
 
 
 def summarize(transcript: str, *, api_key: str, model: str, user_name: str, context: str,
-              recorded_at: str, duration: str) -> str:
+              recorded_at: str, duration: str, participants: str = "",
+              recording_note: str = "") -> str:
     client = anthropic.Anthropic(api_key=api_key, max_retries=4)
-    prompt = build_prompt(transcript, user_name, context, recorded_at, duration)
+    prompt = build_prompt(transcript, user_name, context, recorded_at, duration, participants,
+                          recording_note)
     with client.beta.messages.stream(
         model=model,
         max_tokens=64000,
