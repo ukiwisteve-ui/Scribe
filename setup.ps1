@@ -37,15 +37,22 @@ if (-not (Test-Path ".env")) {
     Start-Process notepad.exe ".env"
 }
 
+# Create the shortcut, or repoint one left by a copy of Scribe in another folder.
 $shortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Scribe.lnk"
-if (-not (Test-Path $shortcut)) {
-    $shell = New-Object -ComObject WScript.Shell
-    $link = $shell.CreateShortcut($shortcut)
-    $link.TargetPath = Join-Path $PSScriptRoot ".venv\Scripts\pythonw.exe"
+$target = Join-Path $PSScriptRoot ".venv\Scripts\pythonw.exe"
+$shell = New-Object -ComObject WScript.Shell
+$link = $shell.CreateShortcut($shortcut)
+if ($link.TargetPath -ne $target) {
+    $previous = $link.TargetPath
+    $link.TargetPath = $target
     $link.Arguments = "-m scribe"
     $link.WorkingDirectory = $PSScriptRoot
     $link.Save()
-    Write-Host "Added a Scribe shortcut to your desktop."
+    if ($previous) {
+        Write-Host "Pointed the Scribe desktop shortcut at this folder (it opened $previous)."
+    } else {
+        Write-Host "Added a Scribe shortcut to your desktop."
+    }
 }
 
 Write-Host ""
