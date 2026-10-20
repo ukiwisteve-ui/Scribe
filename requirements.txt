@@ -6,3 +6,4 @@ httpx2>=2.13
 anthropic>=1.15
 python-dotenv>=1.0
 sv-ttk>=2.6
+websockets>=14

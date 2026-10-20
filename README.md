@@ -70,6 +70,13 @@ Then:
    the other people talk and the **Mic** bar moves when you do. If either stays
    silent for a while, Scribe shows a red warning so you can fix the device
    before the call is lost.
+
+   While you record, the **Live transcript** box shows what's being said, labelled
+   with your name or **Call**. It's handy for checking Scribe is hearing the call,
+   but it streams the audio to Deepgram a second time, so it roughly doubles the
+   Deepgram cost of a call. Turn it off with the **Live transcript** switch (or
+   `SCRIBE_LIVE_TRANSCRIPT=false` in `.env`). The notes are always made from the
+   full recording after the call, and a dropped live connection never affects it.
 5. Press the button again to stop when the call ends. After a minute or two the
    notes appear on the **Notes** page, laid out for reading. **Copy follow-up
    message** puts the suggested recap on the clipboard, ready to paste into an
@@ -140,12 +147,14 @@ All settings live in `.env` (see `.env.example`):
 | `SCRIBE_OUTPUT_DIR` | `Documents\Scribe` | Where sessions are saved |
 | `SCRIBE_CLAUDE_MODEL` | `claude-opus-5-5` | Model used for the notes |
 | `SCRIBE_KEEP_RAW_AUDIO` | `false` | Keep the original per-device recordings |
+| `SCRIBE_LIVE_TRANSCRIPT` | `true` | Show a live transcript while recording (about twice the Deepgram cost) |
 
 ## Costs and privacy
 
 * Deepgram bills per minute of audio, and each channel counts, so a call with your
   mic recorded costs about twice the mono rate. At current list prices that is
-  roughly half a US dollar per hour of call; check
+  roughly half a US dollar per hour of call (about double that with the live
+  transcript on); check
   [deepgram.com/pricing](https://deepgram.com/pricing).
 * Claude typically costs a few tens of cents per hour-long call.
 * Audio is sent to Deepgram and the transcript to Anthropic for processing. Nothing
@@ -168,6 +177,7 @@ Only recording itself needs Windows.
 | --- | --- |
 | `scribe/audio.py` | WASAPI loopback and microphone capture (PyAudioWPatch) |
 | `scribe/mixdown.py` | Aligns, resamples and merges the tracks into `recording.flac` |
+| `scribe/live.py` | Live transcript over Deepgram's streaming API |
 | `scribe/transcribe.py` | Deepgram request, speaker labels, echo removal, transcript files |
 | `scribe/summarize.py` | Claude prompt and request |
 | `scribe/pipeline.py` | Session folders and the post-call steps |

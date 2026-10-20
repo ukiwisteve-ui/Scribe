@@ -12,8 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import audio, history, notes, pipeline, theme
-from .config import APP_DIR, Settings
+from . import audio, history, live, notes, pipeline, theme, transcribe
+from .config import APP_DIR, Settings, save_setting
 
 NO_MIC = "(don't record my microphone)"
 
@@ -55,6 +55,7 @@ class ScribeApp:
         self.shown_calls: list[history.PastCall] = []
         self._search_after: str | None = None
         self._answer_started = False
+        self.live: live.LiveTranscriber | None = None
 
         root.title("Scribe")
         root.geometry("1040x760")
@@ -138,7 +139,7 @@ class ScribeApp:
         self.mic_box = ttk.Combobox(setup, textvariable=self.mic_var, state="readonly")
         self.mic_box.pack(fill="x", pady=(4, 6))
         self._field_label(setup, "What is this call about?", "Optional, helps the summary")
-        self.context_text = theme.text_area(setup, self.palette, height=3)
+        self.context_text = theme.text_area(setup, self.palette, height=2)
         self.context_text.pack(fill="x", pady=(4, 6))
         self._field_label(setup, "Who's on the call?",
                           "Optional, for example Sarah, Tom from Acme")
@@ -165,14 +166,101 @@ class ScribeApp:
         self.warning_label = ttk.Label(rec, text="", style="Warning.TLabel", wraplength=250,
                                        justify="left")
         self.warning_label.pack(fill="x", pady=(6, 0))
+        self.live_var = tk.BooleanVar(value=self.settings.live_transcript)
+        ttk.Checkbutton(rec, text="Live transcript", style="Switch.TCheckbutton",
+                        variable=self.live_var, command=self._toggle_live).pack(
+            anchor="w", pady=(8, 0))
 
-        log_card = self._card(page, "Activity", row=3, column=0, columnspan=2, sticky="nsew",
-                              pady=(14, 0))
+        live_card = self._card(page, "Live transcript", row=3, column=0, sticky="nsew",
+                               padx=(0, 14), pady=(14, 0))
+        frame, self.live_text = theme.scrolled(
+            live_card, lambda p: theme.text_area(p, self.palette, height=6, state="disabled"))
+        frame.pack(fill="both", expand=True)
+        self.live_text.tag_configure("speaker", font=theme.STRONG)
+        self.live_text.tag_configure("me", foreground=self.palette.accent)
+        self.live_text.tag_configure("hint", foreground=self.palette.muted)
+        self.live_text.tag_configure("line", spacing1=2, spacing3=4)
+        self._live_hint()
+
+        log_card = self._card(page, "Activity", row=3, column=1, sticky="nsew", pady=(14, 0))
         frame, self.log_text = theme.scrolled(
-            log_card, lambda p: theme.text_area(p, self.palette, height=5, state="disabled",
-                                                font=theme.CAPTION))
+            log_card, lambda p: theme.text_area(p, self.palette, height=6, width=30,
+                                                state="disabled", font=theme.CAPTION))
         frame.pack(fill="both", expand=True)
         page.rowconfigure(3, weight=1)
+
+    def _live_hint(self):
+        if self.live_var.get():
+            hint = "What's said appears here while you record."
+        else:
+            hint = ("Live transcript is off. Turn it on to see what's said while you record. "
+                    "It roughly doubles the Deepgram cost of a call.")
+        self.live_text.configure(state="normal")
+        self.live_text.delete("1.0", "end")
+        self.live_text.insert("end", hint, ("hint",))
+        self.live_text.configure(state="disabled")
+        self._live_has_lines = False
+
+    def _toggle_live(self):
+        on = self.live_var.get()
+        try:
+            save_setting("SCRIBE_LIVE_TRANSCRIPT", "true" if on else "false")
+        except OSError:
+            pass
+        if self.recorder is None:
+            self._live_hint()
+        elif on:
+            self._start_live()
+        else:
+            self._stop_live()
+            self._log("Live transcript turned off. The recording carries on.")
+
+    def _start_live(self):
+        """Start streaming the current recording. Problems are logged, never raised."""
+        if self.live is not None or self.recorder is None:
+            return
+        if not self.settings.deepgram_api_key:
+            self._log("Live transcript needs DEEPGRAM_API_KEY in .env.")
+            return
+        try:
+            terms = transcribe.keyterms(self.settings.vocabulary,
+                                        self.participants_var.get(), self.settings.user_name)
+            transcriber = live.LiveTranscriber(
+                self.settings.deepgram_api_key, self.settings.language, terms,
+                on_line=lambda who, text: self.events.put(("live_line", (who, text))),
+                on_status=lambda m: self.events.put(("log", m)))
+            labels = {"mic": self.settings.user_name, "system": "Call"}
+            for name, info in self.recorder.tracks.items():
+                transcriber.add_track(name, labels.get(name, name), info.rate, info.channels)
+            self.live = transcriber
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Live transcript could not start ({exc}). The recording carries on.")
+
+    def _stop_live(self):
+        transcriber, self.live = self.live, None
+        if transcriber is not None:
+            try:
+                transcriber.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _on_audio(self, name: str, data: bytes, rate: int, channels: int):
+        """Called on the recorder's writer threads for every chunk written."""
+        transcriber = self.live
+        if transcriber is not None:
+            transcriber.feed(name, data)
+
+    def _add_live_line(self, who: str, text: str):
+        box = self.live_text
+        box.configure(state="normal")
+        if not self._live_has_lines:
+            box.delete("1.0", "end")
+            self._live_has_lines = True
+        tags = ("speaker", "line", "me") if who == self.settings.user_name else ("speaker", "line")
+        box.insert("end", f"{who}  ", tags)
+        box.insert("end", f"{text}\n", ("line",))
+        box.see("end")
+        box.configure(state="disabled")
 
     def _build_notes_page(self, page: ttk.Frame):
         page.columnconfigure(0, weight=1)
@@ -429,7 +517,7 @@ class ScribeApp:
             self.output_var.set(default_out.name)
         self.mic_var.set(default_mic.name if default_mic else NO_MIC)
         self._log("Ready. Press the record button before or during your call, "
-                  "then press Stop when it ends.")
+                  "then press it again when the call ends.")
 
     def _check_keys(self):
         missing = self.settings.missing_keys()
@@ -457,7 +545,8 @@ class ScribeApp:
         self.session_dir = pipeline.new_session_dir(self.settings, context)
         self.meta = pipeline.SessionMeta(started=datetime.now().strftime("%Y-%m-%d %H:%M"))
         try:
-            self.recorder = audio.Recorder(self.session_dir, output, mic)
+            self.recorder = audio.Recorder(self.session_dir, output, mic,
+                                           on_audio=self._on_audio)
             self.recorder.start()
         except Exception as exc:  # noqa: BLE001
             self.recorder = None
@@ -471,8 +560,12 @@ class ScribeApp:
             button.configure(state="disabled")
         self.folder_button.configure(state="normal")
         self._log(f"Recording to {self.session_dir}")
+        if self.live_var.get():
+            self._live_hint()
+            self._start_live()
 
     def _stop(self):
+        self._stop_live()
         self._save_meta(self.recorder.stop())
         self.recorder = None
         self.record_button.set_state(recording=False)
@@ -611,6 +704,8 @@ class ScribeApp:
     def _handle_event(self, kind: str, payload):
         if kind == "log":
             self._log(payload)
+        elif kind == "live_line":
+            self._add_live_line(*payload)
         elif kind == "ask_text":
             # Show the answer as it streams in, then lay it out once it is complete.
             self.answer_text.configure(state="normal")
@@ -652,6 +747,7 @@ class ScribeApp:
             if not messagebox.askyesno("Scribe", "Recording in progress. Stop and quit? "
                                        "The audio is kept and can be processed later."):
                 return
+            self._stop_live()
             self._save_meta(self.recorder.stop())
         self.root.destroy()
 

@@ -12,6 +12,7 @@ import time
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -120,8 +121,11 @@ class _TrackWriter:
     # silence so the system track stays in step with the wall clock.
     GAP_FILL_SECONDS = 0.5
 
-    def __init__(self, info: TrackInfo, fill_gaps: bool, in_channels: int | None = None):
+    def __init__(self, info: TrackInfo, fill_gaps: bool, in_channels: int | None = None,
+                 on_audio: Callable[[bytes], None] | None = None):
         self.info = info
+        # Called with each written chunk (for the live transcript). It must be quick.
+        self.on_audio = on_audio
         self.fill_gaps = fill_gaps
         # Channels the device delivers; more than info.channels means downmixing.
         self.in_channels = in_channels or info.channels
@@ -162,6 +166,11 @@ class _TrackWriter:
                     self.info.frames_written += missing
             self._wav.writeframes(data)
             self.info.frames_written += frames
+            if self.on_audio is not None:
+                try:
+                    self.on_audio(data)
+                except Exception:  # noqa: BLE001
+                    pass  # Never let a listener disturb the recording.
             samples = np.frombuffer(data, dtype=np.int16)
             if samples.size:
                 rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2))) / 32768.0
@@ -183,6 +192,8 @@ class Recorder:
     output_device: Device
     mic_device: Device | None = None
     tracks: dict[str, TrackInfo] = field(default_factory=dict)
+    # Optional listener for each chunk written: on_audio(track name, data, rate, channels).
+    on_audio: Callable[[str, bytes, int, int], None] | None = None
 
     def __post_init__(self):
         _require_pyaudio()
@@ -210,7 +221,11 @@ class Recorder:
         in_channels = max(1, device.channels)
         channels = min(in_channels, 2)
         info = TrackInfo(self.session_dir / f"raw_{name}.wav", device.rate, channels)
-        writer = _TrackWriter(info, fill_gaps, in_channels)
+        listener = None
+        if self.on_audio is not None:
+            def listener(data, name=name, info=info):
+                self.on_audio(name, data, info.rate, info.channels)
+        writer = _TrackWriter(info, fill_gaps, in_channels, listener)
         stream = self._p.open(
             format=pyaudio.paInt16,
             channels=in_channels,
