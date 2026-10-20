@@ -98,7 +98,9 @@ def apply(root: tk.Tk) -> Palette:
             root.tk.call("font", "create", name, "-family", "Segoe UI", "-size", size,
                          "-weight", weight)
     # The variable Segoe font has no italic face in Tk, so use classic Segoe UI.
-    tkfont.Font(root, name=ITALIC, family="Segoe UI", size=-14, slant="italic")
+    # Keep a reference: tkinter deletes a named font when its Font object is collected.
+    root.scribe_italic_font = tkfont.Font(root, name=ITALIC, family="Segoe UI", size=-14,
+                                          slant="italic")
     root.configure(background=palette.bg)
     style = ttk.Style(root)
     style.configure("Muted.TLabel", foreground=palette.muted)
