@@ -80,6 +80,18 @@ Then:
    **Save**. The transcript and notes are redone with the names, without paying
    to transcribe again.
 
+### Call history
+
+The **History** page lists every call saved in your Scribe folder, newest first.
+Type in **Search** to find calls by any word in their notes or transcripts, and
+double-click a call (or press **Open notes**) to read it on the Notes page.
+
+**Ask about past calls** sends the calls in the list (all of them, or only the
+matches when you have searched) to Claude with your question, for example "What
+did we agree with Acme about pricing?" or "What have I promised to do this week?".
+The answer appears as it is written and says which call each point came from.
+Searching first keeps the question quick and cheap.
+
 If something goes wrong after recording (no internet, a missing key), the audio is
 kept. Fix the problem and use **Reprocess a session...** to pick the folder and try
 again. It only pays for the steps that did not finish, and it reapplies the latest
@@ -159,4 +171,7 @@ Only recording itself needs Windows.
 | `scribe/transcribe.py` | Deepgram request, speaker labels, echo removal, transcript files |
 | `scribe/summarize.py` | Claude prompt and request |
 | `scribe/pipeline.py` | Session folders and the post-call steps |
+| `scribe/notes.py` | Reads the summary Markdown for the Notes page and the copy buttons |
+| `scribe/history.py` | Lists and searches past calls, and asks Claude about them |
+| `scribe/theme.py` | Windows 11 theme, record button and level meters |
 | `scribe/gui.py` | The desktop window |

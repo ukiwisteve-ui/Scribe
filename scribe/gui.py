@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import audio, notes, pipeline, theme
+from . import audio, history, notes, pipeline, theme
 from .config import APP_DIR, Settings
 
 NO_MIC = "(don't record my microphone)"
@@ -20,7 +20,7 @@ NO_MIC = "(don't record my microphone)"
 # Warn while recording when a track has carried no sound for this long.
 SILENCE_WARNING_SECONDS = 45
 
-PAGES = ("Record", "Notes")
+PAGES = ("Record", "Notes", "History")
 
 
 def open_path(path: Path):
@@ -51,6 +51,10 @@ class ScribeApp:
         self.busy = False
         self.outputs: dict[str, audio.Device] = {}
         self.mics: dict[str, audio.Device] = {}
+        self.calls: list[history.PastCall] = []
+        self.shown_calls: list[history.PastCall] = []
+        self._search_after: str | None = None
+        self._answer_started = False
 
         root.title("Scribe")
         root.geometry("1040x760")
@@ -93,12 +97,15 @@ class ScribeApp:
             self.pages[name] = page
         self._build_record_page(self.pages["Record"])
         self._build_notes_page(self.pages["Notes"])
+        self._build_history_page(self.pages["History"])
         self._show_page()
 
     def _show_page(self, name: str | None = None):
         if name:
             self.page_var.set(name)
         self.pages[self.page_var.get()].tkraise()
+        if self.page_var.get() == "History":
+            self._load_history()
 
     def _card(self, parent, title: str, **grid) -> ttk.Frame:
         card = ttk.Frame(parent, style="Card.TFrame", padding=(18, 14, 18, 16))
@@ -212,6 +219,136 @@ class ScribeApp:
         self._configure_note_tags(self.notes_text)
         self._show_markdown(self.notes_text, "No notes open yet. Record a call, or open "
                             "one from History.")
+
+    def _build_history_page(self, page: ttk.Frame):
+        page.columnconfigure(0, weight=1)
+        ttk.Label(page, text="Call history", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        self.history_caption = ttk.Label(page, text="", style="Muted.TLabel")
+        self.history_caption.grid(row=1, column=0, sticky="w", pady=(2, 14))
+
+        search = ttk.Frame(page)
+        search.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        search.columnconfigure(1, weight=1)
+        ttk.Label(search, text="Search").grid(row=0, column=0, padx=(0, 10))
+        self.search_var = tk.StringVar()
+        ttk.Entry(search, textvariable=self.search_var).grid(row=0, column=1, sticky="ew")
+        self.search_var.trace_add("write", lambda *_: self._schedule_search())
+        self.search_count = ttk.Label(search, text="", style="Caption.TLabel")
+        self.search_count.grid(row=0, column=2, padx=(10, 0))
+
+        frame = ttk.Frame(page)
+        frame.grid(row=3, column=0, sticky="nsew")
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        self.history_tree = ttk.Treeview(frame, columns=("date", "title", "length"),
+                                         show="headings", selectmode="browse", height=8)
+        for column, heading, width, stretch in (("date", "Date", 150, False),
+                                                ("title", "Call", 400, True),
+                                                ("length", "Length", 90, False)):
+            self.history_tree.heading(column, text=heading, anchor="w")
+            self.history_tree.column(column, width=width, stretch=stretch, anchor="w")
+        bar = ttk.Scrollbar(frame, orient="vertical", command=self.history_tree.yview)
+        self.history_tree.configure(yscrollcommand=bar.set)
+        self.history_tree.grid(row=0, column=0, sticky="nsew")
+        bar.grid(row=0, column=1, sticky="ns")
+        self.history_tree.bind("<Double-1>", lambda e: self._open_selected_call())
+        self.history_tree.bind("<Return>", lambda e: self._open_selected_call())
+        page.rowconfigure(3, weight=3)
+
+        buttons = ttk.Frame(page)
+        buttons.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        ttk.Button(buttons, text="Open notes", style="Accent.TButton",
+                   command=self._open_selected_call).pack(side="left")
+        ttk.Button(buttons, text="Open folder", command=lambda: self._open_selected_call(
+            folder_only=True)).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Reprocess a session...",
+                   command=self._reprocess).pack(side="right")
+
+        ask = self._card(page, "Ask about past calls", row=5, column=0, sticky="nsew",
+                         pady=(16, 0))
+        self.ask_caption = ttk.Label(ask, text="", style="Caption.TLabel")
+        self.ask_caption.pack(anchor="w")
+        row = ttk.Frame(ask)
+        row.pack(fill="x", pady=(6, 8))
+        self.question_var = tk.StringVar()
+        question = ttk.Entry(row, textvariable=self.question_var)
+        question.pack(side="left", fill="x", expand=True)
+        question.bind("<Return>", lambda e: self._ask())
+        self.ask_button = ttk.Button(row, text="Ask", style="Accent.TButton", command=self._ask)
+        self.ask_button.pack(side="left", padx=(8, 0))
+        frame, self.answer_text = theme.scrolled(
+            ask, lambda p: theme.text_area(p, self.palette, height=7, state="disabled"))
+        frame.pack(fill="both", expand=True)
+        self._configure_note_tags(self.answer_text)
+        page.rowconfigure(5, weight=2)
+
+    def _load_history(self):
+        self.settings = Settings.load()
+        self.calls = history.list_calls(self.settings.output_dir)
+        self.history_caption.configure(text=f"Calls saved in {self.settings.output_dir}")
+        self._filter_history()
+
+    def _schedule_search(self):
+        if self._search_after:
+            self.root.after_cancel(self._search_after)
+        self._search_after = self.root.after(250, self._filter_history)
+
+    def _filter_history(self):
+        self._search_after = None
+        query = self.search_var.get()
+        self.shown_calls = history.search(self.calls, query)
+        tree = self.history_tree
+        tree.delete(*tree.get_children())
+        for i, call in enumerate(self.shown_calls):
+            length = pipeline._duration_text(call.duration_seconds) if call.duration_seconds else ""
+            tree.insert("", "end", iid=str(i), values=(call.started, call.title, length))
+        n, total = len(self.shown_calls), len(self.calls)
+        plural = lambda k: "" if k == 1 else "s"  # noqa: E731
+        self.search_count.configure(
+            text=f"{n} of {total}" if query.strip() else f"{total} call{plural(total)}")
+        scope = f"the {n} matching call{plural(n)}" if query.strip() else "your calls"
+        self.ask_caption.configure(text=f"Claude reads {scope}, newest first, and answers from "
+                                   "their notes and transcripts. Search first to narrow it down.")
+
+    def _open_selected_call(self, folder_only: bool = False):
+        selected = self.history_tree.selection()
+        if not selected:
+            if len(self.shown_calls) != 1:
+                return
+            selected = ("0",)
+        call = self.shown_calls[int(selected[0])]
+        if folder_only:
+            open_path(call.folder)
+        else:
+            self.show_notes(call.folder)
+
+    def _ask(self):
+        question = self.question_var.get().strip()
+        if not question or str(self.ask_button.cget("state")) == "disabled":
+            return
+        self.settings = Settings.load()
+        if not self.settings.anthropic_api_key:
+            self._show_markdown(self.answer_text, "Add ANTHROPIC_API_KEY to "
+                                f"{APP_DIR / '.env'} to ask about past calls.")
+            return
+        if not self.shown_calls:
+            self._show_markdown(self.answer_text, "There are no calls to ask about.")
+            return
+        calls = list(self.shown_calls)
+        self.ask_button.configure(state="disabled")
+        self._show_markdown(self.answer_text, "Reading your calls...")
+        self._answer_started = False
+        settings = self.settings
+
+        def work():
+            try:
+                answer = history.ask(question, calls, settings,
+                                     on_text=lambda t: self.events.put(("ask_text", t)))
+                self.events.put(("ask_done", answer))
+            except Exception as exc:  # noqa: BLE001
+                self.events.put(("ask_error", str(exc)))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _configure_note_tags(self, text: tk.Text):
         p = self.palette
@@ -474,6 +611,21 @@ class ScribeApp:
     def _handle_event(self, kind: str, payload):
         if kind == "log":
             self._log(payload)
+        elif kind == "ask_text":
+            # Show the answer as it streams in, then lay it out once it is complete.
+            self.answer_text.configure(state="normal")
+            if not self._answer_started:
+                self.answer_text.delete("1.0", "end")
+                self._answer_started = True
+            self.answer_text.insert("end", payload, ("p",))
+            self.answer_text.see("end")
+            self.answer_text.configure(state="disabled")
+        elif kind == "ask_done":
+            self.ask_button.configure(state="normal")
+            self._show_markdown(self.answer_text, payload)
+        elif kind == "ask_error":
+            self.ask_button.configure(state="normal")
+            self._show_markdown(self.answer_text, f"Could not get an answer: {payload}")
         elif kind == "done":
             self._finish_processing()
             self.show_notes(payload)
