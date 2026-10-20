@@ -12,13 +12,16 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import audio, history, live, notes, pipeline, theme, transcribe
+from . import audio, history, live, micwatch, notes, pipeline, theme, transcribe
 from .config import APP_DIR, Settings, save_setting
 
 NO_MIC = "(don't record my microphone)"
 
 # Warn while recording when a track has carried no sound for this long.
 SILENCE_WARNING_SECONDS = 45
+
+# How often to check whether another app has started using the microphone.
+MIC_POLL_MS = 2000
 
 PAGES = ("Record", "Notes", "History")
 
@@ -56,6 +59,10 @@ class ScribeApp:
         self._search_after: str | None = None
         self._answer_started = False
         self.live: live.LiveTranscriber | None = None
+        self.watcher = micwatch.MicWatcher(
+            ignored=micwatch.parse_ignored(self.settings.record_prompt_ignore))
+        self.prompt: tk.Toplevel | None = None
+        self.prompt_use: micwatch.MicUse | None = None
 
         root.title("Scribe")
         root.geometry("1040x760")
@@ -64,6 +71,7 @@ class ScribeApp:
         self._load_devices()
         self._check_keys()
         self.root.after(100, self._tick)
+        self.root.after(MIC_POLL_MS, self._watch_mic)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # UI layout
@@ -170,6 +178,10 @@ class ScribeApp:
         ttk.Checkbutton(rec, text="Live transcript", style="Switch.TCheckbutton",
                         variable=self.live_var, command=self._toggle_live).pack(
             anchor="w", pady=(8, 0))
+        self.prompt_var = tk.BooleanVar(value=self.settings.record_prompt)
+        ttk.Checkbutton(rec, text="Offer to record when a call starts",
+                        style="Switch.TCheckbutton", variable=self.prompt_var,
+                        command=self._toggle_prompt).pack(anchor="w", pady=(4, 0))
 
         live_card = self._card(page, "Live transcript", row=3, column=0, sticky="nsew",
                                padx=(0, 14), pady=(14, 0))
@@ -188,6 +200,87 @@ class ScribeApp:
                                                 state="disabled", font=theme.CAPTION))
         frame.pack(fill="both", expand=True)
         page.rowconfigure(3, weight=1)
+
+    def _toggle_prompt(self):
+        try:
+            save_setting("SCRIBE_RECORD_PROMPT", "true" if self.prompt_var.get() else "false")
+        except OSError:
+            pass
+        if not self.prompt_var.get():
+            self._close_prompt()
+
+    def _watch_mic(self):
+        """Offer to record when an app such as Teams or Zoom starts using the mic."""
+        try:
+            new = self.watcher.poll()
+            idle = self.recorder is None and not self.busy
+            if self.prompt is not None and (not idle or not self.watcher.still_using(self.prompt_use)):
+                self._close_prompt()  # Recording started, or the call ended.
+            if new and idle and self.prompt is None and self.prompt_var.get():
+                self._show_record_prompt(new[0])
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Could not check the microphone: {exc}")
+        self.root.after(MIC_POLL_MS, self._watch_mic)
+
+    def _show_record_prompt(self, use: micwatch.MicUse):
+        app = use.app
+        prompt = tk.Toplevel(self.root)
+        prompt.title("Scribe")
+        prompt.configure(background=self.palette.bg)
+        prompt.resizable(False, False)
+        prompt.attributes("-topmost", True)
+        prompt.protocol("WM_DELETE_WINDOW", self._close_prompt)
+        theme.set_dark_title_bar(prompt, self.palette is theme.DARK)
+        body = ttk.Frame(prompt, padding=(22, 18, 22, 18))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Record this call?", style="Subtitle.TLabel").pack(anchor="w")
+        ttk.Label(body, text=f"{app} has started using your microphone.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(4, 14))
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Record", style="Accent.TButton",
+                   command=self._record_from_prompt).pack(side="left")
+        ttk.Button(buttons, text="Not now", command=self._close_prompt).pack(side="left", padx=6)
+        ttk.Button(buttons, text=f"Never for {app}",
+                   command=lambda: self._ignore_app(app)).pack(side="left")
+        prompt.update_idletasks()
+        # Bottom right of the screen, above the taskbar, like a notification.
+        width, height = prompt.winfo_reqwidth(), prompt.winfo_reqheight()
+        x = prompt.winfo_screenwidth() - width - 24
+        y = prompt.winfo_screenheight() - height - 96
+        prompt.geometry(f"+{x}+{y}")
+        self.prompt, self.prompt_use = prompt, use
+        self._log(f"{app} started using the microphone.")
+
+    def _close_prompt(self):
+        if self.prompt is not None:
+            try:
+                self.prompt.destroy()
+            except tk.TclError:
+                pass
+        self.prompt, self.prompt_use = None, None
+
+    def _record_from_prompt(self):
+        use = self.prompt_use
+        self._close_prompt()
+        self.root.deiconify()
+        self.root.lift()
+        self._show_page("Record")
+        if use is not None and not self.context_text.get("1.0", "end").strip():
+            self.context_text.insert("1.0", f"{use.app} call")
+        self._start()
+
+    def _ignore_app(self, app: str):
+        self._close_prompt()
+        self.watcher.ignored.add(app.lower())
+        names = sorted(micwatch.parse_ignored(self.settings.record_prompt_ignore) | {app})
+        self.settings.record_prompt_ignore = ", ".join(names)
+        try:
+            save_setting("SCRIBE_RECORD_PROMPT_IGNORE", self.settings.record_prompt_ignore)
+        except OSError:
+            pass
+        self._log(f"Scribe won't offer to record {app} calls. To undo this, edit "
+                  "SCRIBE_RECORD_PROMPT_IGNORE in .env.")
 
     def _live_hint(self):
         if self.live_var.get():
@@ -743,6 +836,7 @@ class ScribeApp:
         self.log_text.configure(state="disabled")
 
     def _on_close(self):
+        self._close_prompt()
         if self.recorder is not None:
             if not messagebox.askyesno("Scribe", "Recording in progress. Stop and quit? "
                                        "The audio is kept and can be processed later."):

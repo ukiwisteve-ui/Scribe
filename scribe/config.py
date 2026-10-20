@@ -83,6 +83,7 @@ class Settings:
     vocabulary: list[str] = field(default_factory=list)
     live_transcript: bool = True
     record_prompt: bool = True
+    record_prompt_ignore: str = ""  # apps never to offer to record, comma-separated
 
     @classmethod
     def load(cls) -> "Settings":
@@ -99,6 +100,7 @@ class Settings:
                         if t.strip()],
             live_transcript=_bool("SCRIBE_LIVE_TRANSCRIPT", True),
             record_prompt=_bool("SCRIBE_RECORD_PROMPT", True),
+            record_prompt_ignore=os.getenv("SCRIBE_RECORD_PROMPT_IGNORE", "").strip(),
         )
 
     def missing_keys(self) -> list[str]:

@@ -87,6 +87,18 @@ Then:
    **Save**. The transcript and notes are redone with the names, without paying
    to transcribe again.
 
+### "Record this call?"
+
+While Scribe is open and not recording, it notices when another app (Teams, Zoom,
+WhatsApp, Slack, a browser and so on) starts using your microphone, which usually
+means a call has started, and pops up **Record this call?** in the corner of the
+screen. **Record** starts recording straight away, **Not now** dismisses it, and
+**Never for Teams** (or whichever app it was) stops it asking for that app. Turn
+the prompt off altogether with the **Offer to record when a call starts** switch.
+It uses the list Windows keeps for the microphone privacy settings, so it only
+works for apps allowed to use the mic under **Settings > Privacy & security >
+Microphone**. Scribe's own recording never triggers it.
+
 ### Call history
 
 The **History** page lists every call saved in your Scribe folder, newest first.
@@ -147,6 +159,8 @@ All settings live in `.env` (see `.env.example`):
 | `SCRIBE_OUTPUT_DIR` | `Documents\Scribe` | Where sessions are saved |
 | `SCRIBE_CLAUDE_MODEL` | `claude-opus-5-5` | Model used for the notes |
 | `SCRIBE_KEEP_RAW_AUDIO` | `false` | Keep the original per-device recordings |
+| `SCRIBE_RECORD_PROMPT` | `true` | Offer to record when another app starts using the mic |
+| `SCRIBE_RECORD_PROMPT_IGNORE` | | Apps never to offer to record, comma-separated (for example `Discord, Chrome`) |
 | `SCRIBE_LIVE_TRANSCRIPT` | `true` | Show a live transcript while recording (about twice the Deepgram cost) |
 
 ## Costs and privacy
@@ -177,6 +191,7 @@ Only recording itself needs Windows.
 | --- | --- |
 | `scribe/audio.py` | WASAPI loopback and microphone capture (PyAudioWPatch) |
 | `scribe/mixdown.py` | Aligns, resamples and merges the tracks into `recording.flac` |
+| `scribe/micwatch.py` | Notices other apps starting to use the mic, for the "Record this call?" prompt |
 | `scribe/live.py` | Live transcript over Deepgram's streaming API |
 | `scribe/transcribe.py` | Deepgram request, speaker labels, echo removal, transcript files |
 | `scribe/summarize.py` | Claude prompt and request |
