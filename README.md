@@ -5,6 +5,16 @@ Teams, Zoom, Google Meet, Slack, WhatsApp, a phone app or anything else that pla
 sound. Nobody has to invite a bot. When you press **Stop**, it transcribes the call
 with speaker labels and writes up a summary with decisions and action items.
 
+![Scribe recording a call, with the live transcript](docs/screenshots/record.png)
+
+| Notes | History |
+| --- | --- |
+| ![The notes for a call, laid out for reading](docs/screenshots/notes.png) | ![Searching past calls and asking Claude about them](docs/screenshots/history.png) |
+
+Scribe follows Windows' light or dark mode. For comparison, this is how the window
+looked before the redesign: [before.png](docs/screenshots/before.png). The calls
+in these screenshots are made-up examples.
+
 ## How it works
 
 1. **Recording.** Scribe captures two things at once: everything your PC plays
@@ -92,7 +102,11 @@ Then:
 While Scribe is open and not recording, it notices when another app (Teams, Zoom,
 WhatsApp, Slack, a browser and so on) starts using your microphone, which usually
 means a call has started, and pops up **Record this call?** in the corner of the
-screen. **Record** starts recording straight away, **Not now** dismisses it, and
+screen.
+
+![The "Record this call?" prompt](docs/screenshots/record-prompt.png)
+
+**Record** starts recording straight away, **Not now** dismisses it, and
 **Never for Teams** (or whichever app it was) stops it asking for that app. Turn
 the prompt off altogether with the **Offer to record when a call starts** switch.
 It uses the list Windows keeps for the microphone privacy settings, so it only
