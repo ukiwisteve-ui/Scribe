@@ -46,15 +46,14 @@ Then:
 1. Download this repository (green **Code** button, then **Download ZIP**) and
    unzip it somewhere permanent, for example `C:\Users\<you>\Scribe`.
    Or, with Git: `git clone https://github.com/ukiwisteve-ui/Scribe.git`
-2. Open the folder, click the address bar, type `powershell` and press Enter.
-3. Run:
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File setup.ps1
-   ```
+2. Double-click **`Setup.bat`** in that folder. (If Windows shows a blue
+   "Windows protected your PC" box, click **More info**, then **Run anyway**.)
 
    This creates a private Python environment in `.venv`, installs what Scribe
    needs, adds a **Scribe** shortcut to your desktop, and opens `.env` in Notepad.
+   It takes a few minutes the first time.
+3. If you prefer PowerShell, running
+   `powershell -ExecutionPolicy Bypass -File setup.ps1` in the folder does the same.
 4. In `.env`, paste your two keys after `DEEPGRAM_API_KEY=` and
    `ANTHROPIC_API_KEY=`, set `SCRIBE_USER_NAME` to your name, and save.
 
