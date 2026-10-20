@@ -94,6 +94,10 @@ speaker handling to the existing transcript.
 * Pick the device the call actually plays through. If you switch from speakers to a
   headset, choose the headset in **Call audio from** before you start.
 * Everything else your PC plays (videos, notification sounds) is recorded too.
+* **Unusual names and jargon.** Names typed in **Who's on the call?** are passed
+  to Deepgram so it spells them correctly. For words that come up on every call
+  (product names, colleagues, acronyms), add them to `SCRIBE_VOCABULARY` in `.env`,
+  separated by commas. This applies to new transcriptions, not ones already made.
 * For calls in another language, set `SCRIBE_LANGUAGE` in `.env` (for example
   `de`, `fr`, `es`), or `multi` for calls that mix languages.
 
@@ -117,6 +121,7 @@ All settings live in `.env` (see `.env.example`):
 | `ANTHROPIC_API_KEY` | | Claude key (required) |
 | `SCRIBE_USER_NAME` | `Me` | Your name in transcripts and action items |
 | `SCRIBE_LANGUAGE` | `en` | Spoken language code, or `multi` |
+| `SCRIBE_VOCABULARY` | | Names and jargon to spell correctly, comma-separated |
 | `SCRIBE_OUTPUT_DIR` | `Documents\Scribe` | Where sessions are saved |
 | `SCRIBE_CLAUDE_MODEL` | `claude-opus-5-5` | Model used for the notes |
 | `SCRIBE_KEEP_RAW_AUDIO` | `false` | Keep the original per-device recordings |

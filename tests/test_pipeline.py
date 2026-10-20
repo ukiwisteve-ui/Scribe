@@ -18,13 +18,16 @@ def test_process_session_end_to_end(tmp_path, monkeypatch):
         "system": {"path": "raw_system.wav", "rate": 48000, "channels": 2, "first_frame_time": 10.0},
         "mic": {"path": "raw_mic.wav", "rate": 48000, "channels": 1, "first_frame_time": 10.1},
     })
+    meta.participants = "Sarah from Acme"
     meta.save(folder)
+    settings.vocabulary = ["OKRs"]
+    calls = {}
 
-    def fake_request(path, key, language, channels):
+    def fake_request(path, key, language, channels, keyterms=None):
         assert channels == 2
+        calls["keyterms"] = keyterms
         return response(say(1.2, 0, "Yes, by Friday."), say(0.1, 0, "Can you send the deck?"))
 
-    calls = {}
 
     def fake_summarize(transcript, **kwargs):
         calls["transcript"] = transcript
@@ -40,6 +43,7 @@ def test_process_session_end_to_end(tmp_path, monkeypatch):
     assert "Speaker 1: Can you send the deck?" in calls["transcript"]
     assert calls["context"] == "Weekly sync with Acme"
     assert calls["recording_note"] == ""
+    assert calls["keyterms"] == ["Sarah", "Acme", "Steve", "OKRs"]
     assert (folder / "recording.flac").exists()
     assert not (folder / "raw_system.wav").exists()
     assert json.loads((folder / "session.json").read_text())["channels"] == 2

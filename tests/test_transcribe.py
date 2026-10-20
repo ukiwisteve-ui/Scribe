@@ -109,3 +109,28 @@ def test_request_sends_expected_params(tmp_path, monkeypatch):
     assert captured["params"]["language"] == "en-GB"
     assert captured["headers"]["Authorization"] == "Token key123"
     assert captured["body"] == b"fLaC"
+
+
+def test_keyterms_go_one_per_query_param(tmp_path, monkeypatch):
+    audio = tmp_path / "rec.flac"
+    audio.write_bytes(b"fLaC")
+    captured = {}
+
+    def fake_post(url, params, headers, content, timeout):
+        captured["url"] = httpx2.Request("POST", url, params=params).url
+        return httpx2.Response(200, json={"results": {"channels": []}})
+
+    monkeypatch.setattr(transcribe.httpx2, "post", fake_post)
+    transcribe.request_transcript(audio, "k", "en", channels=1, keyterms=["Siobhan", "OKRs"])
+    assert captured["url"].params.get_list("keyterm") == ["Siobhan", "OKRs"]
+    transcribe.request_transcript(audio, "k", "en", channels=1)
+    assert "keyterm" not in captured["url"].params
+
+
+def test_participant_names_and_keyterms():
+    assert transcribe.participant_names("Sarah, Tom from Acme and Priya (Globex)") == [
+        "Sarah", "Tom", "Acme", "Priya", "Globex"]
+    terms = transcribe.keyterms(["Kubernetes", "acme", " "], "Sarah, Tom from Acme", "Steve")
+    assert terms == ["Sarah", "Tom", "Acme", "Steve", "Kubernetes"]
+    assert transcribe.keyterms([], "", "Me") == []
+    assert len(transcribe.keyterms([f"t{i}" for i in range(80)])) == transcribe.MAX_KEYTERMS

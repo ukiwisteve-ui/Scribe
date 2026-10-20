@@ -107,8 +107,9 @@ def process_session(folder: Path, settings: Settings,
     response_path = folder / RESPONSE_FILE
     if not response_path.exists():
         log("Transcribing...")
+        terms = transcribe.keyterms(settings.vocabulary, meta.participants, settings.user_name)
         data = transcribe.request_transcript(audio_path, settings.deepgram_api_key,
-                                             settings.language, meta.channels)
+                                             settings.language, meta.channels, keyterms=terms)
         response_path.write_text(json.dumps(data), encoding="utf-8")
     # Parsing is cheap, so it is redone every time; reprocessing an old call
     # picks up improvements to speaker handling without paying to transcribe again.

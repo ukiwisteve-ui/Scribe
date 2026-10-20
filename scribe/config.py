@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -61,6 +61,7 @@ class Settings:
     output_dir: Path
     claude_model: str
     keep_raw_audio: bool
+    vocabulary: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls) -> "Settings":
@@ -73,6 +74,8 @@ class Settings:
             output_dir=Path(os.path.expandvars(os.path.expanduser(output_dir))),
             claude_model=os.getenv("SCRIBE_CLAUDE_MODEL", "").strip() or "claude-opus-5-5",
             keep_raw_audio=_bool("SCRIBE_KEEP_RAW_AUDIO", False),
+            vocabulary=[t.strip() for t in os.getenv("SCRIBE_VOCABULARY", "").split(",")
+                        if t.strip()],
         )
 
     def missing_keys(self) -> list[str]:
