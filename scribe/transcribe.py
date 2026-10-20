@@ -29,8 +29,34 @@ class Segment:
     channel: int = 0
 
 
-def request_transcript(audio_path: Path, api_key: str, language: str, channels: int) -> dict:
-    params = {
+# Deepgram caps keyterm prompting at about 500 tokens, so keep the list short.
+MAX_KEYTERMS = 50
+
+
+def participant_names(participants: str) -> list[str]:
+    """Pull names out of the "Who's on the call?" text, e.g. "Sarah, Tom from Acme"."""
+    names = []
+    for part in re.split(r"[,;\n/&]|\band\b|\bfrom\b|\bat\b|\bwith\b|[()]", participants):
+        part = part.strip(" .:-")
+        if part and len(part.split()) <= 4:
+            names.append(part)
+    return names
+
+
+def keyterms(vocabulary: list[str], participants: str = "", user_name: str = "") -> list[str]:
+    """Words Deepgram should listen out for: names on the call first, then jargon."""
+    seen, terms = set(), []
+    for term in [*participant_names(participants), user_name, *vocabulary]:
+        term = term.strip()
+        if term and term.lower() not in seen and term.lower() != "me":
+            seen.add(term.lower())
+            terms.append(term)
+    return terms[:MAX_KEYTERMS]
+
+
+def request_transcript(audio_path: Path, api_key: str, language: str, channels: int,
+                       keyterms: list[str] | None = None) -> dict:
+    params: dict[str, str | list[str]] = {
         "model": "nova-3",
         "smart_format": "true",
         "punctuate": "true",
@@ -42,6 +68,8 @@ def request_transcript(audio_path: Path, api_key: str, language: str, channels: 
         params["language"] = language
     if channels > 1:
         params["multichannel"] = "true"
+    if keyterms:
+        params["keyterm"] = list(keyterms)  # Sent as one keyterm=... per term.
 
     headers = {"Authorization": f"Token {api_key}", "Content-Type": "audio/flac"}
     timeout = httpx2.Timeout(connect=30.0, read=1800.0, write=1800.0, pool=30.0)

@@ -5,6 +5,16 @@ Teams, Zoom, Google Meet, Slack, WhatsApp, a phone app or anything else that pla
 sound. Nobody has to invite a bot. When you press **Stop**, it transcribes the call
 with speaker labels and writes up a summary with decisions and action items.
 
+![Scribe recording a call, with the live transcript](docs/screenshots/record.png)
+
+| Notes | History |
+| --- | --- |
+| ![The notes for a call, laid out for reading](docs/screenshots/notes.png) | ![Searching past calls and asking Claude about them](docs/screenshots/history.png) |
+
+Scribe follows Windows' light or dark mode. For comparison, this is how the window
+looked before the redesign: [before.png](docs/screenshots/before.png). The calls
+in these screenshots are made-up examples.
+
 ## How it works
 
 1. **Recording.** Scribe captures two things at once: everything your PC plays
@@ -66,16 +76,54 @@ Then:
 3. Optionally type what the call is about (for example "Q4 planning with Acme,
    agree launch date") and who is on it (for example "Sarah, Tom from Acme").
    Claude uses both to write better notes and to put names to the speakers.
-4. Press **Start recording** before or during the call. The **Call** bar moves when
+4. Press the round red **record** button before or during the call. The **Call** bar moves when
    the other people talk and the **Mic** bar moves when you do. If either stays
    silent for a while, Scribe shows a red warning so you can fix the device
    before the call is lost.
-5. Press **Stop and summarise** when the call ends. After a minute or two the
-   notes open automatically. **Open transcript** and **Open folder** are there too.
+
+   While you record, the **Live transcript** box shows what's being said, labelled
+   with your name or **Call**. It's handy for checking Scribe is hearing the call,
+   but it streams the audio to Deepgram a second time, so it roughly doubles the
+   Deepgram cost of a call. Turn it off with the **Live transcript** switch (or
+   `SCRIBE_LIVE_TRANSCRIPT=false` in `.env`). The notes are always made from the
+   full recording after the call, and a dropped live connection never affects it.
+5. Press the button again to stop when the call ends. After a minute or two the
+   notes appear on the **Notes** page, laid out for reading. **Copy follow-up
+   message** puts the suggested recap on the clipboard, ready to paste into an
+   email or chat, and **Copy action items** copies the actions as a list.
+   **Open notes**, **Open transcript** and **Open folder** open the files themselves.
 6. If the transcript says "Speaker 1" and "Speaker 2", press **Name speakers...**,
    type who each one is (a few of their lines are shown to help), and press
    **Save**. The transcript and notes are redone with the names, without paying
    to transcribe again.
+
+### "Record this call?"
+
+While Scribe is open and not recording, it notices when another app (Teams, Zoom,
+WhatsApp, Slack, a browser and so on) starts using your microphone, which usually
+means a call has started, and pops up **Record this call?** in the corner of the
+screen.
+
+![The "Record this call?" prompt](docs/screenshots/record-prompt.png)
+
+**Record** starts recording straight away, **Not now** dismisses it, and
+**Never for Teams** (or whichever app it was) stops it asking for that app. Turn
+the prompt off altogether with the **Offer to record when a call starts** switch.
+It uses the list Windows keeps for the microphone privacy settings, so it only
+works for apps allowed to use the mic under **Settings > Privacy & security >
+Microphone**. Scribe's own recording never triggers it.
+
+### Call history
+
+The **History** page lists every call saved in your Scribe folder, newest first.
+Type in **Search** to find calls by any word in their notes or transcripts, and
+double-click a call (or press **Open notes**) to read it on the Notes page.
+
+**Ask about past calls** sends the calls in the list (all of them, or only the
+matches when you have searched) to Claude with your question, for example "What
+did we agree with Acme about pricing?" or "What have I promised to do this week?".
+The answer appears as it is written and says which call each point came from.
+Searching first keeps the question quick and cheap.
 
 If something goes wrong after recording (no internet, a missing key), the audio is
 kept. Fix the problem and use **Reprocess a session...** to pick the folder and try
@@ -94,6 +142,10 @@ speaker handling to the existing transcript.
 * Pick the device the call actually plays through. If you switch from speakers to a
   headset, choose the headset in **Call audio from** before you start.
 * Everything else your PC plays (videos, notification sounds) is recorded too.
+* **Unusual names and jargon.** Names typed in **Who's on the call?** are passed
+  to Deepgram so it spells them correctly. For words that come up on every call
+  (product names, colleagues, acronyms), add them to `SCRIBE_VOCABULARY` in `.env`,
+  separated by commas. This applies to new transcriptions, not ones already made.
 * For calls in another language, set `SCRIBE_LANGUAGE` in `.env` (for example
   `de`, `fr`, `es`), or `multi` for calls that mix languages.
 
@@ -117,15 +169,20 @@ All settings live in `.env` (see `.env.example`):
 | `ANTHROPIC_API_KEY` | | Claude key (required) |
 | `SCRIBE_USER_NAME` | `Me` | Your name in transcripts and action items |
 | `SCRIBE_LANGUAGE` | `en` | Spoken language code, or `multi` |
+| `SCRIBE_VOCABULARY` | | Names and jargon to spell correctly, comma-separated |
 | `SCRIBE_OUTPUT_DIR` | `Documents\Scribe` | Where sessions are saved |
 | `SCRIBE_CLAUDE_MODEL` | `claude-opus-5-5` | Model used for the notes |
 | `SCRIBE_KEEP_RAW_AUDIO` | `false` | Keep the original per-device recordings |
+| `SCRIBE_RECORD_PROMPT` | `true` | Offer to record when another app starts using the mic |
+| `SCRIBE_RECORD_PROMPT_IGNORE` | | Apps never to offer to record, comma-separated (for example `Discord, Chrome`) |
+| `SCRIBE_LIVE_TRANSCRIPT` | `true` | Show a live transcript while recording (about twice the Deepgram cost) |
 
 ## Costs and privacy
 
 * Deepgram bills per minute of audio, and each channel counts, so a call with your
   mic recorded costs about twice the mono rate. At current list prices that is
-  roughly half a US dollar per hour of call; check
+  roughly half a US dollar per hour of call (about double that with the live
+  transcript on); check
   [deepgram.com/pricing](https://deepgram.com/pricing).
 * Claude typically costs a few tens of cents per hour-long call.
 * Audio is sent to Deepgram and the transcript to Anthropic for processing. Nothing
@@ -148,7 +205,12 @@ Only recording itself needs Windows.
 | --- | --- |
 | `scribe/audio.py` | WASAPI loopback and microphone capture (PyAudioWPatch) |
 | `scribe/mixdown.py` | Aligns, resamples and merges the tracks into `recording.flac` |
+| `scribe/micwatch.py` | Notices other apps starting to use the mic, for the "Record this call?" prompt |
+| `scribe/live.py` | Live transcript over Deepgram's streaming API |
 | `scribe/transcribe.py` | Deepgram request, speaker labels, echo removal, transcript files |
 | `scribe/summarize.py` | Claude prompt and request |
 | `scribe/pipeline.py` | Session folders and the post-call steps |
+| `scribe/notes.py` | Reads the summary Markdown for the Notes page and the copy buttons |
+| `scribe/history.py` | Lists and searches past calls, and asks Claude about them |
+| `scribe/theme.py` | Windows 11 theme, record button and level meters |
 | `scribe/gui.py` | The desktop window |

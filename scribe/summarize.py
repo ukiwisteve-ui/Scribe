@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 import anthropic
 
 SYSTEM_PROMPT = """\
@@ -73,16 +75,14 @@ Who was on the call, according to {user_name}: {participants_block}
 {OUTPUT_FORMAT.format(user_name=user_name)}"""
 
 
-def summarize(transcript: str, *, api_key: str, model: str, user_name: str, context: str,
-              recorded_at: str, duration: str, participants: str = "",
-              recording_note: str = "") -> str:
+def ask_claude(prompt: str, *, system: str, api_key: str, model: str,
+               on_text: Callable[[str], None] | None = None, what: str = "answer") -> str:
+    """Stream one request to Claude and return the text, calling `on_text` as it arrives."""
     client = anthropic.Anthropic(api_key=api_key, max_retries=4)
-    prompt = build_prompt(transcript, user_name, context, recorded_at, duration, participants,
-                          recording_note)
     with client.beta.messages.stream(
         model=model,
         max_tokens=64000,
-        system=SYSTEM_PROMPT,
+        system=system,
         thinking={"type": "adaptive"},
         output_config={"effort": "high"},
         # If a safety classifier declines, let the API retry on a suitable model.
@@ -90,13 +90,25 @@ def summarize(transcript: str, *, api_key: str, model: str, user_name: str, cont
         fallbacks="default",
         messages=[{"role": "user", "content": prompt}],
     ) as stream:
+        if on_text is not None:
+            for chunk in stream.text_stream:
+                on_text(chunk)
         message = stream.get_final_message()
 
     if message.stop_reason == "refusal":
-        raise RuntimeError("Claude declined to summarise this transcript.")
+        raise RuntimeError(f"Claude declined to write the {what}.")
     text = "".join(block.text for block in message.content if block.type == "text").strip()
     if not text:
-        raise RuntimeError(f"Claude returned no summary (stop reason: {message.stop_reason}).")
+        raise RuntimeError(f"Claude returned no {what} (stop reason: {message.stop_reason}).")
     if message.stop_reason == "max_tokens":
-        text += "\n\n_(The summary was cut off because it hit the length limit.)_"
+        text += f"\n\n_(The {what} was cut off because it hit the length limit.)_"
     return text
+
+
+def summarize(transcript: str, *, api_key: str, model: str, user_name: str, context: str,
+              recorded_at: str, duration: str, participants: str = "",
+              recording_note: str = "") -> str:
+    prompt = build_prompt(transcript, user_name, context, recorded_at, duration, participants,
+                          recording_note)
+    return ask_claude(prompt, system=SYSTEM_PROMPT, api_key=api_key, model=model,
+                      what="summary")
