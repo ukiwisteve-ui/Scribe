@@ -66,12 +66,15 @@ Then:
 3. Optionally type what the call is about (for example "Q4 planning with Acme,
    agree launch date") and who is on it (for example "Sarah, Tom from Acme").
    Claude uses both to write better notes and to put names to the speakers.
-4. Press **Start recording** before or during the call. The **Call** bar moves when
+4. Press the round red **record** button before or during the call. The **Call** bar moves when
    the other people talk and the **Mic** bar moves when you do. If either stays
    silent for a while, Scribe shows a red warning so you can fix the device
    before the call is lost.
-5. Press **Stop and summarise** when the call ends. After a minute or two the
-   notes open automatically. **Open transcript** and **Open folder** are there too.
+5. Press the button again to stop when the call ends. After a minute or two the
+   notes appear on the **Notes** page, laid out for reading. **Copy follow-up
+   message** puts the suggested recap on the clipboard, ready to paste into an
+   email or chat, and **Copy action items** copies the actions as a list.
+   **Open notes**, **Open transcript** and **Open folder** open the files themselves.
 6. If the transcript says "Speaker 1" and "Speaker 2", press **Name speakers...**,
    type who each one is (a few of their lines are shown to help), and press
    **Save**. The transcript and notes are redone with the names, without paying

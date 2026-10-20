@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import audio, pipeline, theme
+from . import audio, notes, pipeline, theme
 from .config import APP_DIR, Settings
 
 NO_MIC = "(don't record my microphone)"
@@ -20,7 +20,7 @@ NO_MIC = "(don't record my microphone)"
 # Warn while recording when a track has carried no sound for this long.
 SILENCE_WARNING_SECONDS = 45
 
-PAGES = ("Record",)
+PAGES = ("Record", "Notes")
 
 
 def open_path(path: Path):
@@ -92,6 +92,7 @@ class ScribeApp:
             page.grid(row=0, column=0, sticky="nsew")
             self.pages[name] = page
         self._build_record_page(self.pages["Record"])
+        self._build_notes_page(self.pages["Notes"])
         self._show_page()
 
     def _show_page(self, name: str | None = None):
@@ -158,30 +159,123 @@ class ScribeApp:
                                        justify="left")
         self.warning_label.pack(fill="x", pady=(6, 0))
 
-        actions = ttk.Frame(page)
-        actions.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(14, 0))
-        self.summary_button = ttk.Button(actions, text="Open notes", state="disabled",
-                                         command=lambda: self._open_file("summary.md"))
-        self.summary_button.pack(side="left")
-        self.transcript_button = ttk.Button(actions, text="Open transcript", state="disabled",
-                                            command=lambda: self._open_file("transcript.md"))
-        self.transcript_button.pack(side="left", padx=6)
-        self.folder_button = ttk.Button(actions, text="Open folder", state="disabled",
-                                        command=lambda: open_path(self.session_dir))
-        self.folder_button.pack(side="left")
-        self.names_button = ttk.Button(actions, text="Name speakers...", state="disabled",
-                                       command=self._name_speakers)
-        self.names_button.pack(side="left", padx=6)
-        ttk.Button(actions, text="Reprocess a session...",
-                   command=self._reprocess).pack(side="right")
-
-        log_card = self._card(page, "Activity", row=4, column=0, columnspan=2, sticky="nsew",
+        log_card = self._card(page, "Activity", row=3, column=0, columnspan=2, sticky="nsew",
                               pady=(14, 0))
         frame, self.log_text = theme.scrolled(
             log_card, lambda p: theme.text_area(p, self.palette, height=5, state="disabled",
                                                 font=theme.CAPTION))
         frame.pack(fill="both", expand=True)
-        page.rowconfigure(4, weight=1)
+        page.rowconfigure(3, weight=1)
+
+    def _build_notes_page(self, page: ttk.Frame):
+        page.columnconfigure(0, weight=1)
+        self.notes_title = ttk.Label(page, text="Notes", style="Title.TLabel", wraplength=760,
+                                     justify="left")
+        self.notes_title.grid(row=0, column=0, sticky="w")
+        self.notes_caption = ttk.Label(page, text="", style="Muted.TLabel")
+        self.notes_caption.grid(row=1, column=0, sticky="w", pady=(2, 14))
+
+        bar = ttk.Frame(page)
+        bar.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        self.copy_follow_up_button = ttk.Button(
+            bar, text="Copy follow-up message", style="Accent.TButton", state="disabled",
+            command=lambda: self._copy(notes.follow_up_message, "follow-up message"))
+        self.copy_follow_up_button.pack(side="left")
+        self.copy_actions_button = ttk.Button(
+            bar, text="Copy action items", state="disabled",
+            command=lambda: self._copy(notes.action_items_text, "action items"))
+        self.copy_actions_button.pack(side="left", padx=6)
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8, pady=4)
+        self.summary_button = ttk.Button(bar, text="Open notes", state="disabled",
+                                         command=lambda: self._open_file("summary.md"))
+        self.summary_button.pack(side="left")
+        self.transcript_button = ttk.Button(bar, text="Open transcript", state="disabled",
+                                            command=lambda: self._open_file("transcript.md"))
+        self.transcript_button.pack(side="left", padx=6)
+        self.folder_button = ttk.Button(bar, text="Open folder", state="disabled",
+                                        command=lambda: open_path(self.session_dir))
+        self.folder_button.pack(side="left")
+        self.names_button = ttk.Button(bar, text="Name speakers...", state="disabled",
+                                       command=self._name_speakers)
+        self.names_button.pack(side="left", padx=6)
+
+        frame, self.notes_text = theme.scrolled(
+            page, lambda p: theme.text_area(p, self.palette, padx=28, pady=20, cursor="arrow"))
+        frame.grid(row=3, column=0, sticky="nsew")
+        page.rowconfigure(3, weight=1)
+        footer = ttk.Frame(page)
+        footer.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        self.copied_label = ttk.Label(footer, text="", style="Caption.TLabel")
+        self.copied_label.pack(side="left")
+        ttk.Button(footer, text="Reprocess a session...",
+                   command=self._reprocess).pack(side="right")
+        self._configure_note_tags(self.notes_text)
+        self._show_markdown(self.notes_text, "No notes open yet. Record a call, or open "
+                            "one from History.")
+
+    def _configure_note_tags(self, text: tk.Text):
+        p = self.palette
+        text.tag_configure("h1", font=theme.TITLE, spacing1=2, spacing3=10)
+        text.tag_configure("h2", font=theme.SUBTITLE, spacing1=18, spacing3=6)
+        text.tag_configure("h3", font=theme.STRONG, spacing1=12, spacing3=4)
+        text.tag_configure("p", spacing1=2, spacing3=6)
+        text.tag_configure("bullet", lmargin1=8, lmargin2=26, spacing1=2, spacing3=2)
+        text.tag_configure("bullet2", lmargin1=30, lmargin2=48, spacing1=1, spacing3=1)
+        text.tag_configure("item", lmargin1=8, lmargin2=8, spacing1=8)
+        text.tag_configure("meta", lmargin1=8, lmargin2=8, foreground=p.muted,
+                           font=theme.CAPTION, spacing3=2)
+        text.tag_configure("quote", lmargin1=22, lmargin2=22, rmargin=22, foreground=p.fg,
+                           background=p.bg, spacing1=8, spacing3=8)
+        text.tag_configure("bold", font=theme.STRONG)
+        text.tag_configure("italic", font=theme.ITALIC)
+        text.tag_configure("code", font=("Cascadia Mono", 10))
+        text.tag_raise("bold")
+
+    def _show_markdown(self, text: tk.Text, md: str):
+        text.configure(state="normal")
+        text.delete("1.0", "end")
+        for chunk, tags in notes.render(md):
+            text.insert("end", chunk, tags)
+        text.configure(state="disabled")
+        text.yview_moveto(0)
+
+    def show_notes(self, folder: Path):
+        """Show a session's notes in the window."""
+        self.session_dir = folder
+        summary = folder / "summary.md"
+        md = summary.read_text(encoding="utf-8") if summary.exists() else ""
+        self.notes_md = md
+        try:
+            meta = pipeline.SessionMeta.load(folder)
+            caption = meta.started
+            if meta.duration_seconds:
+                caption += f"   {pipeline._duration_text(meta.duration_seconds)}"
+        except (OSError, ValueError, TypeError):
+            caption = ""
+        self.notes_title.configure(text=notes.title(md) or folder.name)
+        self.notes_caption.configure(text=caption)
+        body = md.split("\n", 1)[1] if md.startswith("# ") else md
+        self._show_markdown(self.notes_text, body or "This call has no notes yet. Use "
+                            "'Reprocess a session' to write them.")
+        has = {name: (folder / name).exists() for name in ("summary.md", "transcript.md",
+                                                           "transcript.json")}
+        state = lambda ok: "normal" if ok else "disabled"  # noqa: E731
+        self.summary_button.configure(state=state(has["summary.md"]))
+        self.transcript_button.configure(state=state(has["transcript.md"]))
+        self.names_button.configure(state=state(has["transcript.json"]))
+        self.folder_button.configure(state="normal")
+        self.copy_follow_up_button.configure(state=state(bool(notes.follow_up_message(md))))
+        self.copy_actions_button.configure(state=state(bool(notes.action_items_text(md))))
+        self.copied_label.configure(text="")
+        self._show_page("Notes")
+
+    def _copy(self, extract, what: str):
+        text = extract(getattr(self, "notes_md", ""))
+        if not text:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.copied_label.configure(text=f"Copied the {what}. Paste it into your email or chat.")
 
     def _load_devices(self):
         try:
@@ -197,7 +291,7 @@ class ScribeApp:
         if default_out:
             self.output_var.set(default_out.name)
         self.mic_var.set(default_mic.name if default_mic else NO_MIC)
-        self._log("Ready. Start recording before or during your call, "
+        self._log("Ready. Press the record button before or during your call, "
                   "then press Stop when it ends.")
 
     def _check_keys(self):
@@ -382,10 +476,7 @@ class ScribeApp:
             self._log(payload)
         elif kind == "done":
             self._finish_processing()
-            self.summary_button.configure(state="normal")
-            self.transcript_button.configure(state="normal")
-            self.names_button.configure(state="normal")
-            self._open_file("summary.md")
+            self.show_notes(payload)
         elif kind == "error":
             self._finish_processing()
             if self.session_dir and (self.session_dir / "transcript.md").exists():

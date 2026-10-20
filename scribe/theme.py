@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import tkinter as tk
+import tkinter.font as tkfont
 from dataclasses import dataclass
 from tkinter import ttk
 
@@ -43,6 +44,7 @@ STRONG = "SunValleyBodyStrongFont"
 CAPTION = "SunValleyCaptionFont"
 SUBTITLE = "SunValleySubtitleFont"
 TITLE = "SunValleyTitleFont"
+ITALIC = "ScribeItalicFont"
 
 
 def windows_prefers_dark() -> bool:
@@ -95,6 +97,8 @@ def apply(root: tk.Tk) -> Palette:
             weight = "bold" if name in (STRONG, SUBTITLE, TITLE) else "normal"
             root.tk.call("font", "create", name, "-family", "Segoe UI", "-size", size,
                          "-weight", weight)
+    # The variable Segoe font has no italic face in Tk, so use classic Segoe UI.
+    tkfont.Font(root, name=ITALIC, family="Segoe UI", size=-14, slant="italic")
     root.configure(background=palette.bg)
     style = ttk.Style(root)
     style.configure("Muted.TLabel", foreground=palette.muted)
@@ -105,6 +109,8 @@ def apply(root: tk.Tk) -> Palette:
     style.configure("Timer.TLabel", font=TITLE)
     style.configure("Warning.TLabel", foreground=palette.record)
     style.configure("Nav.Toolbutton", font=BODY, padding=(14, 8), anchor="w")
+    style.map("Nav.Toolbutton", foreground=[("selected", palette.accent)],
+              font=[("selected", STRONG)])
     style.configure("Treeview", rowheight=30)
     set_dark_title_bar(root, dark)
     return palette
