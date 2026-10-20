@@ -1,4 +1,4 @@
-"""The Scribe desktop window (tkinter)."""
+"""The Scribe desktop window (tkinter with the Windows 11 Sun Valley theme)."""
 
 from __future__ import annotations
 
@@ -12,13 +12,15 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import audio, pipeline
+from . import audio, pipeline, theme
 from .config import APP_DIR, Settings
 
 NO_MIC = "(don't record my microphone)"
 
 # Warn while recording when a track has carried no sound for this long.
 SILENCE_WARNING_SECONDS = 45
+
+PAGES = ("Record",)
 
 
 def open_path(path: Path):
@@ -32,19 +34,27 @@ def open_path(path: Path):
         subprocess.Popen(["xdg-open", str(path)])
 
 
+def format_elapsed(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
 class ScribeApp:
     def __init__(self, root: tk.Tk):
         self.root = root
+        self.palette = theme.apply(root)
         self.settings = Settings.load()
         self.recorder: audio.Recorder | None = None
         self.session_dir: Path | None = None
         self.meta: pipeline.SessionMeta | None = None
         self.events: queue.Queue = queue.Queue()
         self.busy = False
+        self.outputs: dict[str, audio.Device] = {}
+        self.mics: dict[str, audio.Device] = {}
 
         root.title("Scribe")
-        root.geometry("680x640")
-        root.minsize(660, 560)
+        root.geometry("1040x760")
+        root.minsize(900, 640)
         self._build()
         self._load_devices()
         self._check_keys()
@@ -54,54 +64,102 @@ class ScribeApp:
     # UI layout
 
     def _build(self):
-        pad = {"padx": 12, "pady": 4}
-        frame = ttk.Frame(self.root)
-        frame.pack(fill="both", expand=True, pady=8)
-        frame.columnconfigure(1, weight=1)
+        self.root.columnconfigure(2, weight=1)
+        self.root.rowconfigure(0, weight=1)
 
-        ttk.Label(frame, text="Call audio from").grid(row=0, column=0, sticky="w", **pad)
+        sidebar = ttk.Frame(self.root, padding=(12, 20, 12, 12), width=200)
+        sidebar.grid(row=0, column=0, sticky="ns")
+        sidebar.grid_propagate(False)
+        ttk.Label(sidebar, text="Scribe", style="Subtitle.TLabel").pack(anchor="w", padx=8)
+        ttk.Label(sidebar, text="Call notes, written for you", style="Caption.TLabel").pack(
+            anchor="w", padx=8, pady=(0, 18))
+        self.page_var = tk.StringVar(value=PAGES[0])
+        self.nav: dict[str, ttk.Radiobutton] = {}
+        for name in PAGES:
+            button = ttk.Radiobutton(sidebar, text=name, value=name, variable=self.page_var,
+                                     style="Nav.Toolbutton", command=self._show_page)
+            button.pack(fill="x", pady=2)
+            self.nav[name] = button
+        ttk.Separator(self.root, orient="vertical").grid(row=0, column=1, sticky="ns")
+
+        content = ttk.Frame(self.root)
+        content.grid(row=0, column=2, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+        self.pages: dict[str, ttk.Frame] = {}
+        for name in PAGES:
+            page = ttk.Frame(content, padding=(28, 20, 28, 20))
+            page.grid(row=0, column=0, sticky="nsew")
+            self.pages[name] = page
+        self._build_record_page(self.pages["Record"])
+        self._show_page()
+
+    def _show_page(self, name: str | None = None):
+        if name:
+            self.page_var.set(name)
+        self.pages[self.page_var.get()].tkraise()
+
+    def _card(self, parent, title: str, **grid) -> ttk.Frame:
+        card = ttk.Frame(parent, style="Card.TFrame", padding=(18, 14, 18, 16))
+        card.grid(**grid)
+        ttk.Label(card, text=title, style="Strong.TLabel").pack(anchor="w", pady=(0, 8))
+        body = ttk.Frame(card)
+        body.pack(fill="both", expand=True)
+        return body
+
+    def _field_label(self, parent, text: str, hint: str = ""):
+        ttk.Label(parent, text=text).pack(anchor="w", pady=(6, 0))
+        if hint:
+            ttk.Label(parent, text=hint, style="Caption.TLabel").pack(anchor="w")
+
+    def _build_record_page(self, page: ttk.Frame):
+        page.columnconfigure(0, weight=1)
+        ttk.Label(page, text="Record a call", style="Title.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(page, text="Works with Teams, Zoom, Meet, WhatsApp or anything else your PC "
+                  "plays. Start before or during the call.", style="Muted.TLabel").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(2, 16))
+
+        setup = self._card(page, "Call setup", row=2, column=0, sticky="nsew", padx=(0, 14))
+        self._field_label(setup, "Call audio from", "The speakers or headset you hear the call through")
         self.output_var = tk.StringVar()
-        self.output_box = ttk.Combobox(frame, textvariable=self.output_var, state="readonly")
-        self.output_box.grid(row=0, column=1, sticky="ew", **pad)
-
-        ttk.Label(frame, text="My microphone").grid(row=1, column=0, sticky="w", **pad)
+        self.output_box = ttk.Combobox(setup, textvariable=self.output_var, state="readonly")
+        self.output_box.pack(fill="x", pady=(4, 6))
+        self._field_label(setup, "My microphone")
         self.mic_var = tk.StringVar()
-        self.mic_box = ttk.Combobox(frame, textvariable=self.mic_var, state="readonly")
-        self.mic_box.grid(row=1, column=1, sticky="ew", **pad)
-
-        ttk.Label(frame, text="What is this call about?\n(optional, helps the summary)",
-                  justify="left").grid(row=2, column=0, sticky="nw", **pad)
-        self.context_text = tk.Text(frame, height=4, wrap="word")
-        self.context_text.grid(row=2, column=1, sticky="ew", **pad)
-
-        ttk.Label(frame, text="Who's on the call?\n(optional, e.g. Sarah, Tom from Acme)",
-                  justify="left").grid(row=3, column=0, sticky="nw", **pad)
+        self.mic_box = ttk.Combobox(setup, textvariable=self.mic_var, state="readonly")
+        self.mic_box.pack(fill="x", pady=(4, 6))
+        self._field_label(setup, "What is this call about?", "Optional, helps the summary")
+        self.context_text = theme.text_area(setup, self.palette, height=3)
+        self.context_text.pack(fill="x", pady=(4, 6))
+        self._field_label(setup, "Who's on the call?",
+                          "Optional, for example Sarah, Tom from Acme")
         self.participants_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=self.participants_var).grid(
-            row=3, column=1, sticky="ew", **pad)
+        ttk.Entry(setup, textvariable=self.participants_var).pack(fill="x", pady=(4, 0))
 
-        meters = ttk.Frame(frame)
-        meters.grid(row=4, column=0, columnspan=2, sticky="ew", **pad)
+        rec = self._card(page, "Recording", row=2, column=1, sticky="nsew")
+        rec.configure(width=290)
+        self.record_button = theme.RecordButton(rec, self.palette, self._toggle)
+        self.record_button.pack(pady=(4, 6))
+        self.status_label = ttk.Label(rec, text="Ready to record", style="Strong.TLabel")
+        self.status_label.pack()
+        self.timer_label = ttk.Label(rec, text="00:00:00", style="Timer.TLabel")
+        self.timer_label.pack(pady=(0, 10))
+        meters = ttk.Frame(rec)
+        meters.pack(fill="x")
         meters.columnconfigure(1, weight=1)
-        ttk.Label(meters, text="Call").grid(row=0, column=0, sticky="w")
-        self.system_meter = ttk.Progressbar(meters, maximum=1.0)
-        self.system_meter.grid(row=0, column=1, sticky="ew", padx=8, pady=2)
-        ttk.Label(meters, text="Mic").grid(row=1, column=0, sticky="w")
-        self.mic_meter = ttk.Progressbar(meters, maximum=1.0)
-        self.mic_meter.grid(row=1, column=1, sticky="ew", padx=8, pady=2)
-        self.warning_label = ttk.Label(meters, text="", foreground="#b00020", wraplength=480,
+        ttk.Label(meters, text="Call", style="Caption.TLabel").grid(row=0, column=0, sticky="w")
+        self.system_meter = theme.LevelMeter(meters, self.palette)
+        self.system_meter.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=6)
+        ttk.Label(meters, text="Mic", style="Caption.TLabel").grid(row=1, column=0, sticky="w")
+        self.mic_meter = theme.LevelMeter(meters, self.palette)
+        self.mic_meter.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=6)
+        self.warning_label = ttk.Label(rec, text="", style="Warning.TLabel", wraplength=250,
                                        justify="left")
-        self.warning_label.grid(row=2, column=0, columnspan=2, sticky="w")
+        self.warning_label.pack(fill="x", pady=(6, 0))
 
-        controls = ttk.Frame(frame)
-        controls.grid(row=5, column=0, columnspan=2, sticky="ew", **pad)
-        self.record_button = ttk.Button(controls, text="Start recording", command=self._toggle)
-        self.record_button.pack(side="left")
-        self.timer_label = ttk.Label(controls, text="00:00:00", font=("Segoe UI", 14))
-        self.timer_label.pack(side="left", padx=16)
-
-        actions = ttk.Frame(frame)
-        actions.grid(row=6, column=0, columnspan=2, sticky="ew", **pad)
+        actions = ttk.Frame(page)
+        actions.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(14, 0))
         self.summary_button = ttk.Button(actions, text="Open notes", state="disabled",
                                          command=lambda: self._open_file("summary.md"))
         self.summary_button.pack(side="left")
@@ -117,17 +175,20 @@ class ScribeApp:
         ttk.Button(actions, text="Reprocess a session...",
                    command=self._reprocess).pack(side="right")
 
-        self.log_text = tk.Text(frame, height=10, wrap="word", state="disabled",
-                                background="#f4f4f4", relief="flat")
-        self.log_text.grid(row=7, column=0, columnspan=2, sticky="nsew", **pad)
-        frame.rowconfigure(7, weight=1)
+        log_card = self._card(page, "Activity", row=4, column=0, columnspan=2, sticky="nsew",
+                              pady=(14, 0))
+        frame, self.log_text = theme.scrolled(
+            log_card, lambda p: theme.text_area(p, self.palette, height=5, state="disabled",
+                                                font=theme.CAPTION))
+        frame.pack(fill="both", expand=True)
+        page.rowconfigure(4, weight=1)
 
     def _load_devices(self):
         try:
             outputs, mics, default_out, default_mic = audio.list_devices()
         except Exception as exc:  # noqa: BLE001
             self._log(f"Could not list audio devices: {exc}")
-            self.record_button.configure(state="disabled")
+            self.record_button.set_state(enabled=False)
             return
         self.outputs = {d.name: d for d in outputs}
         self.mics = {d.name: d for d in mics}
@@ -154,6 +215,8 @@ class ScribeApp:
             self._stop()
 
     def _start(self):
+        if self.busy:
+            return
         output = self.outputs.get(self.output_var.get())
         if output is None:
             messagebox.showerror("Scribe", "Choose the device your call audio plays through.")
@@ -169,7 +232,8 @@ class ScribeApp:
             self.recorder = None
             messagebox.showerror("Scribe", f"Could not start recording:\n{exc}")
             return
-        self.record_button.configure(text="Stop and summarise")
+        self.record_button.set_state(recording=True)
+        self.status_label.configure(text="Recording. Press to stop and summarise")
         self.output_box.configure(state="disabled")
         self.mic_box.configure(state="disabled")
         for button in (self.summary_button, self.transcript_button, self.names_button):
@@ -180,11 +244,12 @@ class ScribeApp:
     def _stop(self):
         self._save_meta(self.recorder.stop())
         self.recorder = None
-        self.record_button.configure(text="Start recording")
+        self.record_button.set_state(recording=False)
+        self.status_label.configure(text="Ready to record")
         self.output_box.configure(state="readonly")
         self.mic_box.configure(state="readonly")
-        self.system_meter["value"] = 0
-        self.mic_meter["value"] = 0
+        self.system_meter.set(0)
+        self.mic_meter.set(0)
         self.warning_label.configure(text="")
         self._log("Recording stopped.")
         self._process(self.session_dir)
@@ -199,7 +264,8 @@ class ScribeApp:
 
     def _process(self, folder: Path):
         self.busy = True
-        self.record_button.configure(state="disabled")
+        self.record_button.set_state(enabled=False)
+        self.status_label.configure(text="Writing your notes...")
         self.settings = Settings.load()
 
         def work():
@@ -240,7 +306,9 @@ class ScribeApp:
         dialog = tk.Toplevel(self.root)
         dialog.title("Name speakers")
         dialog.transient(self.root)
-        body = ttk.Frame(dialog, padding=12)
+        dialog.configure(background=self.palette.bg)
+        theme.set_dark_title_bar(dialog, self.palette is theme.DARK)
+        body = ttk.Frame(dialog, padding=20)
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
         ttk.Label(body, text="Type a name for each speaker, then press Save. "
@@ -249,13 +317,13 @@ class ScribeApp:
                                                       sticky="w", pady=(0, 8))
         entries = {}
         for row, (label, lines) in enumerate(samples.items(), start=1):
-            ttk.Label(body, text=label, font=("Segoe UI", 10, "bold")).grid(
-                row=row * 2 - 1, column=0, sticky="w", pady=(8, 0))
+            ttk.Label(body, text=label, style="Strong.TLabel").grid(
+                row=row * 2 - 1, column=0, sticky="w", pady=(10, 0))
             var = tk.StringVar(value=meta.speaker_names.get(label, ""))
             ttk.Entry(body, textvariable=var).grid(row=row * 2 - 1, column=1, sticky="ew",
-                                                   padx=(8, 0), pady=(8, 0))
-            quote = "\n".join(f"\u201c{line}\u201d" for line in lines)
-            ttk.Label(body, text=quote, foreground="#555", wraplength=460,
+                                                   padx=(10, 0), pady=(10, 0))
+            quote = "\n".join(f"“{line}”" for line in lines)
+            ttk.Label(body, text=quote, style="Muted.TLabel", wraplength=460,
                       justify="left").grid(row=row * 2, column=0, columnspan=2, sticky="w")
             entries[label] = var
 
@@ -268,9 +336,10 @@ class ScribeApp:
             self._process(folder)
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=len(samples) * 2 + 1, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        buttons.grid(row=len(samples) * 2 + 1, column=0, columnspan=2, sticky="e", pady=(16, 0))
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right")
-        ttk.Button(buttons, text="Save", command=save).pack(side="right", padx=6)
+        ttk.Button(buttons, text="Save", style="Accent.TButton", command=save).pack(
+            side="right", padx=6)
         dialog.grab_set()
 
     def _silence_warning(self) -> str:
@@ -294,35 +363,40 @@ class ScribeApp:
 
     def _tick(self):
         if self.recorder is not None:
-            elapsed = int(self.recorder.elapsed())
-            self.timer_label.configure(
-                text=f"{elapsed // 3600:02d}:{elapsed % 3600 // 60:02d}:{elapsed % 60:02d}")
+            self.timer_label.configure(text=format_elapsed(self.recorder.elapsed()))
             levels = self.recorder.levels()
-            self.system_meter["value"] = levels.get("system", 0)
-            self.mic_meter["value"] = levels.get("mic", 0)
+            self.system_meter.set(levels.get("system", 0))
+            self.mic_meter.set(levels.get("mic", 0))
             self.warning_label.configure(text=self._silence_warning())
+            self.record_button.tick()
         while True:
             try:
                 kind, payload = self.events.get_nowait()
             except queue.Empty:
                 break
-            if kind == "log":
-                self._log(payload)
-            elif kind == "done":
-                self.busy = False
-                self.record_button.configure(state="normal")
-                self.summary_button.configure(state="normal")
-                self.transcript_button.configure(state="normal")
-                self.names_button.configure(state="normal")
-                self._open_file("summary.md")
-            elif kind == "error":
-                self.busy = False
-                self.record_button.configure(state="normal")
-                if self.session_dir and (self.session_dir / "transcript.md").exists():
-                    self.transcript_button.configure(state="normal")
-                self._log(f"Problem: {payload}\nThe recording is saved; fix the issue and "
-                          "use 'Reprocess a session' to try again.")
+            self._handle_event(kind, payload)
         self.root.after(100, self._tick)
+
+    def _handle_event(self, kind: str, payload):
+        if kind == "log":
+            self._log(payload)
+        elif kind == "done":
+            self._finish_processing()
+            self.summary_button.configure(state="normal")
+            self.transcript_button.configure(state="normal")
+            self.names_button.configure(state="normal")
+            self._open_file("summary.md")
+        elif kind == "error":
+            self._finish_processing()
+            if self.session_dir and (self.session_dir / "transcript.md").exists():
+                self.transcript_button.configure(state="normal")
+            self._log(f"Problem: {payload}\nThe recording is saved; fix the issue and "
+                      "use 'Reprocess a session' to try again.")
+
+    def _finish_processing(self):
+        self.busy = False
+        self.record_button.set_state(enabled=True)
+        self.status_label.configure(text="Ready to record")
 
     def _log(self, message: str):
         self.log_text.configure(state="normal")
