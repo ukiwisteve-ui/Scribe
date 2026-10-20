@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
+from bisect import bisect_left
 from dataclasses import asdict, dataclass
-from difflib import SequenceMatcher
 from pathlib import Path
 
 import httpx2
@@ -13,6 +14,10 @@ DEEPGRAM_URL = "https://api.deepgram.com/v1/listen"
 
 # Consecutive lines from the same speaker closer together than this are merged.
 MERGE_GAP_SECONDS = 1.5
+
+# How far apart in time the same word can appear on both channels and still
+# count as the mic picking up the call audio.
+ECHO_WINDOW = 0.6
 
 
 @dataclass
@@ -29,8 +34,6 @@ def request_transcript(audio_path: Path, api_key: str, language: str, channels: 
         "model": "nova-3",
         "smart_format": "true",
         "punctuate": "true",
-        "paragraphs": "true",
-        "utterances": "true",
         "diarize": "true",
     }
     if language.lower() in {"auto", "detect"}:
@@ -50,61 +53,135 @@ def request_transcript(audio_path: Path, api_key: str, language: str, channels: 
     return response.json()
 
 
-def _speaker_label(channel: int, speaker: int, channels: int, user_name: str,
-                   mic_speakers: set[int]) -> str:
-    if channels > 1 and channel == 0:
-        # The mic is you. If the room had more voices, number the extras.
-        if len(mic_speakers) <= 1 or speaker == min(mic_speakers):
-            return user_name
-        return f"{user_name} (room) {speaker + 1}"
-    return f"Speaker {speaker + 1}"
+@dataclass
+class Word:
+    start: float
+    end: float
+    text: str
+    channel: int
+    speaker: int
+
+    @property
+    def norm(self) -> str:
+        return re.sub(r"[^a-z0-9']", "", self.text.lower())
+
+
+def extract_words(data: dict) -> list[Word]:
+    words = []
+    for channel, result in enumerate(data.get("results", {}).get("channels") or []):
+        alternatives = result.get("alternatives") or [{}]
+        for w in alternatives[0].get("words") or []:
+            words.append(Word(
+                start=float(w["start"]),
+                end=float(w["end"]),
+                text=w.get("punctuated_word") or w.get("word", ""),
+                channel=channel,
+                speaker=int(w.get("speaker", 0)),
+            ))
+    return words
+
+
+def remove_echo(words: list[Word]) -> list[Word]:
+    """Drop mic words that are the other people leaking into your microphone.
+
+    Without headphones the mic hears the call too, so the same words appear on
+    both channels at about the same moment. Each mic word is matched against
+    system words within ECHO_WINDOW seconds. A run of two or more matching
+    words is echo, as is a lone matching word that makes up a whole phrase on
+    its own ("Thanks." "Yeah."). One matching word in the middle of your own
+    sentence is kept, because people do say the same word at the same time.
+    """
+    system = sorted((w for w in words if w.channel == 1), key=lambda w: w.start)
+    starts = [w.start for w in system]
+    mic = sorted((w for w in words if w.channel == 0), key=lambda w: w.start)
+
+    def matches(word: Word) -> bool:
+        if not word.norm:
+            return False
+        i = bisect_left(starts, word.start - ECHO_WINDOW)
+        while i < len(system) and system[i].start <= word.start + ECHO_WINDOW:
+            if system[i].norm == word.norm:
+                return True
+            i += 1
+        return False
+
+    echo = set()
+    # Phrases: runs of mic words without a long pause.
+    phrases: list[list[int]] = []
+    for i, word in enumerate(mic):
+        if phrases and word.start - mic[phrases[-1][-1]].end < 1.0:
+            phrases[-1].append(i)
+        else:
+            phrases.append([i])
+    for phrase in phrases:
+        flags = [matches(mic[i]) for i in phrase]
+        run: list[int] = []
+        for i, flag in zip(phrase + [None], flags + [False]):
+            if flag:
+                run.append(i)
+                continue
+            if len(run) >= 2 or (run and len(run) == len(phrase)):
+                echo.update(run)
+            run = []
+    kept_mic = [w for i, w in enumerate(mic) if i not in echo]
+    return sorted(system + kept_mic, key=lambda w: w.start)
+
+
+def speaker_labels(words: list[Word], channels: int, user_name: str) -> dict[tuple[int, int], str]:
+    """Name each (channel, speaker) pair.
+
+    On the mic channel the speaker with the most words is you; anyone else the
+    mic picked up (people in the room, a phone on speaker) gets a number after
+    the people heard through the PC.
+    """
+    labels: dict[tuple[int, int], str] = {}
+    order: list[tuple[int, int]] = []
+    counts: dict[tuple[int, int], int] = {}
+    for w in sorted(words, key=lambda w: w.start):
+        key = (w.channel, w.speaker)
+        counts[key] = counts.get(key, 0) + 1
+        if key not in order:
+            order.append(key)
+    if channels > 1:
+        mic_keys = [k for k in order if k[0] == 0]
+        if mic_keys:
+            labels[max(mic_keys, key=lambda k: counts[k])] = user_name
+    n = 1
+    for key in sorted(order, key=lambda k: (k[0] == 0, order.index(k))):
+        if key not in labels:
+            labels[key] = f"Speaker {n}"
+            n += 1
+    return labels
 
 
 def parse_response(data: dict, channels: int, user_name: str) -> list[Segment]:
-    utterances = data.get("results", {}).get("utterances") or []
-    mic_speakers = {int(u.get("speaker", 0)) for u in utterances if int(u.get("channel", 0)) == 0}
-    segments = []
-    for u in utterances:
-        text = (u.get("transcript") or "").strip()
-        if not text:
-            continue
-        channel = int(u.get("channel", 0))
-        speaker = int(u.get("speaker", 0))
-        segments.append(Segment(
-            start=float(u["start"]),
-            end=float(u["end"]),
-            speaker=_speaker_label(channel, speaker, channels, user_name, mic_speakers),
-            text=text,
-            channel=channel,
-        ))
-    segments.sort(key=lambda s: (s.start, s.channel))
+    words = extract_words(data)
     if channels > 1:
-        segments = drop_echo(segments)
-    return merge_segments(segments)
+        words = remove_echo(words)
+    labels = speaker_labels(words, channels, user_name)
 
-
-def drop_echo(segments: list[Segment], similarity: float = 0.75) -> list[Segment]:
-    """Remove mic lines that are just the speakers being picked up by the mic.
-
-    Without headphones the mic hears the other people too, which would show up
-    as you repeating what they said. A mic line that overlaps in time with a
-    near-identical system-audio line is treated as echo.
-    """
-    system = [s for s in segments if s.channel == 1]
-    kept = []
-    for seg in segments:
-        if seg.channel == 0:
-            for other in system:
-                if other.end < seg.start - 1.0 or other.start > seg.end + 1.0:
-                    continue
-                ratio = SequenceMatcher(None, seg.text.lower(), other.text.lower()).ratio()
-                if ratio >= similarity:
-                    break
-            else:
-                kept.append(seg)
+    # Group each speaker's words into turns, then order the turns by time. A
+    # turn continues across someone talking over it ("yeah", "mm") but ends when
+    # another person speaks in the pause after it.
+    ordered = sorted(words, key=lambda w: w.start)
+    turns: list[Segment] = []
+    current: dict[str, tuple[Segment, int]] = {}
+    for i, w in enumerate(ordered):
+        label = labels[(w.channel, w.speaker)]
+        seg, last = current.get(label, (None, -1))
+        interrupted = seg is not None and any(
+            labels[(o.channel, o.speaker)] != label and o.start >= seg.end - 0.05
+            for o in ordered[last + 1:i]
+        )
+        if seg and not interrupted and w.start - seg.end <= MERGE_GAP_SECONDS:
+            seg.text = f"{seg.text} {w.text}"
+            seg.end = w.end
         else:
-            kept.append(seg)
-    return kept
+            seg = Segment(start=w.start, end=w.end, speaker=label, text=w.text, channel=w.channel)
+            turns.append(seg)
+        current[label] = (seg, i)
+    turns.sort(key=lambda s: s.start)
+    return merge_segments(turns)
 
 
 def merge_segments(segments: list[Segment]) -> list[Segment]:
@@ -117,6 +194,15 @@ def merge_segments(segments: list[Segment]) -> list[Segment]:
         else:
             merged.append(Segment(**asdict(seg)))
     return merged
+
+
+def rename_speakers(segments: list[Segment], names: dict[str, str]) -> list[Segment]:
+    """Apply names chosen after the call, e.g. {"Speaker 1": "Sarah"}."""
+    renamed = []
+    for seg in segments:
+        name = (names.get(seg.speaker) or "").strip() or seg.speaker
+        renamed.append(Segment(**{**asdict(seg), "speaker": name}))
+    return merge_segments(renamed)
 
 
 def format_timestamp(seconds: float) -> str:

@@ -3,6 +3,7 @@ import json
 from scribe import pipeline
 from scribe.config import Settings
 from tests.test_mixdown import write_wav
+from tests.test_transcribe import response, say
 
 
 def test_process_session_end_to_end(tmp_path, monkeypatch):
@@ -21,10 +22,7 @@ def test_process_session_end_to_end(tmp_path, monkeypatch):
 
     def fake_request(path, key, language, channels):
         assert channels == 2
-        return {"results": {"utterances": [
-            {"start": 0.1, "end": 1.0, "channel": 1, "speaker": 0, "transcript": "Can you send the deck?"},
-            {"start": 1.2, "end": 1.9, "channel": 0, "speaker": 0, "transcript": "Yes, by Friday."},
-        ]}}
+        return response(say(1.2, 0, "Yes, by Friday."), say(0.1, 0, "Can you send the deck?"))
 
     calls = {}
 
@@ -39,7 +37,51 @@ def test_process_session_end_to_end(tmp_path, monkeypatch):
 
     assert summary.read_text() == "# Notes\n"
     assert "Steve: Yes, by Friday." in calls["transcript"]
+    assert "Speaker 1: Can you send the deck?" in calls["transcript"]
     assert calls["context"] == "Weekly sync with Acme"
+    assert calls["recording_note"] == ""
     assert (folder / "recording.flac").exists()
     assert not (folder / "raw_system.wav").exists()
     assert json.loads((folder / "session.json").read_text())["channels"] == 2
+
+
+def make_session(tmp_path, data, **meta_fields):
+    settings = Settings(deepgram_api_key="d", anthropic_api_key="a", user_name="Steve",
+                        language="en", output_dir=tmp_path, claude_model="claude-opus-5-5",
+                        keep_raw_audio=False)
+    folder = pipeline.new_session_dir(settings, "")
+    (folder / pipeline.AUDIO_FILE).write_bytes(b"already mixed")
+    (folder / pipeline.RESPONSE_FILE).write_text(json.dumps(data))
+    pipeline.SessionMeta(started="2026-10-20 10:06", channels=2, duration_seconds=17,
+                         **meta_fields).save(folder)
+    return settings, folder
+
+
+def test_silent_call_channel_is_flagged(tmp_path, monkeypatch):
+    data = response(say(0.5, 0, "Thank you very much.") + say(2.0, 0, "You're welcome."), [])
+    settings, folder = make_session(tmp_path, data)
+    calls, logs = {}, []
+    monkeypatch.setattr(pipeline.summarize, "summarize", lambda t, **k: calls.update(k) or "# N")
+    pipeline.process_session(folder, settings, log=logs.append)
+    assert "No speech was heard on the call-audio channel" in calls["recording_note"]
+    assert any("no speech was heard from the call audio" in m for m in logs)
+
+
+def test_names_and_participants_reach_transcript_and_summary(tmp_path, monkeypatch):
+    data = response(say(0.0, 0, "Morning."), say(1.0, 0, "Hi Steve, it's Sarah."))
+    settings, folder = make_session(tmp_path, data, participants="Sarah from Acme",
+                                    speaker_names={"Speaker 1": "Sarah"})
+    calls = {}
+
+    def fake_summarize(transcript, **kwargs):
+        calls["transcript"] = transcript
+        calls.update(kwargs)
+        return "# N"
+
+    monkeypatch.setattr(pipeline.summarize, "summarize", fake_summarize)
+    pipeline.process_session(folder, settings, log=lambda m: None)
+    assert "Sarah: Hi Steve, it's Sarah." in calls["transcript"]
+    assert calls["participants"] == "Sarah from Acme"
+    assert "Sarah:** Hi Steve" in (folder / "transcript.md").read_text()
+    # Samples for the naming dialog use the original labels.
+    assert set(pipeline.speaker_samples(folder)) == {"Steve", "Speaker 1"}

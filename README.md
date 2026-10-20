@@ -64,20 +64,33 @@ Then:
    * **Call audio from**: the speakers or headset you hear the call through.
    * **My microphone**: the mic you talk into.
 3. Optionally type what the call is about (for example "Q4 planning with Acme,
-   agree launch date"). This gives Claude context and names the session folder.
-4. Press **Start recording** before or during the call. The two bars show that
-   sound is coming through.
+   agree launch date") and who is on it (for example "Sarah, Tom from Acme").
+   Claude uses both to write better notes and to put names to the speakers.
+4. Press **Start recording** before or during the call. The **Call** bar moves when
+   the other people talk and the **Mic** bar moves when you do. If either stays
+   silent for a while, Scribe shows a red warning so you can fix the device
+   before the call is lost.
 5. Press **Stop and summarise** when the call ends. After a minute or two the
    notes open automatically. **Open transcript** and **Open folder** are there too.
+6. If the transcript says "Speaker 1" and "Speaker 2", press **Name speakers...**,
+   type who each one is (a few of their lines are shown to help), and press
+   **Save**. The transcript and notes are redone with the names, without paying
+   to transcribe again.
 
 If something goes wrong after recording (no internet, a missing key), the audio is
 kept. Fix the problem and use **Reprocess a session...** to pick the folder and try
-again. It only redoes the steps that did not finish.
+again. It only pays for the steps that did not finish, and it reapplies the latest
+speaker handling to the existing transcript.
 
 ### Tips for the best results
 
 * **Wear headphones** if you can. With speakers, your mic also hears the other
-  people. Scribe removes most of that echo, but headphones give the cleanest result.
+  people. Scribe spots words that appear on both the call and your mic at the same
+  moment and gives them to the right person, but headphones give the cleanest result.
+* **The call has to play through your PC.** Scribe records what your PC plays, so a
+  call made on your mobile is only heard faintly through your mic and everyone ends
+  up labelled as you. Use the desktop app (Teams, Zoom, WhatsApp Desktop, Phone Link
+  and so on) instead.
 * Pick the device the call actually plays through. If you switch from speakers to a
   headset, choose the headset in **Call audio from** before you start.
 * Everything else your PC plays (videos, notification sounds) is recorded too.

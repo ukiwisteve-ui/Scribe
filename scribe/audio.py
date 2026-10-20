@@ -21,6 +21,10 @@ except ImportError:  # Not on Windows (tests, CI). Recording is unavailable.
     pyaudio = None
 
 
+# RMS level (0..1) above which a track counts as carrying sound, not silence.
+SOUND_THRESHOLD = 0.003
+
+
 @dataclass
 class Device:
     index: int
@@ -95,6 +99,7 @@ class _TrackWriter:
         self.info = info
         self.fill_gaps = fill_gaps
         self.level = 0.0
+        self.last_sound = time.monotonic()
         self._queue: queue.Queue[tuple[float, bytes] | None] = queue.Queue()
         self._wav = wave.open(str(info.path), "wb")
         self._wav.setnchannels(info.channels)
@@ -131,6 +136,8 @@ class _TrackWriter:
             if samples.size:
                 rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2))) / 32768.0
                 self.level = min(1.0, rms * 4)
+                if rms > SOUND_THRESHOLD:
+                    self.last_sound = arrived
 
     def close(self):
         self._queue.put(None)
@@ -220,6 +227,11 @@ class Recorder:
 
     def levels(self) -> dict[str, float]:
         return {name: w.level for name, w in self._writers.items()}
+
+    def silent_for(self) -> dict[str, float]:
+        """Seconds since each track last carried any sound."""
+        now = time.monotonic()
+        return {name: now - w.last_sound for name, w in self._writers.items()}
 
     def elapsed(self) -> float:
         return 0.0 if self.started_at is None else time.monotonic() - self.started_at
