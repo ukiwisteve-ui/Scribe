@@ -45,6 +45,31 @@ class TrackInfo:
     frames_written: int = 0
 
 
+def downmix_to_stereo(samples: np.ndarray, channels: int) -> np.ndarray:
+    """Fold interleaved int16 audio with more than two channels down to stereo.
+
+    Uses the standard WAVE channel order (FL, FR, C, LFE, then surround pairs).
+    The centre goes to both sides, LFE is dropped and surround pairs go to their
+    side, so dialogue mixed into any channel survives.
+    """
+    if channels <= 2:
+        return samples
+    frames = samples.reshape(-1, channels).astype(np.float32)
+    left = frames[:, 0].copy()
+    right = frames[:, 1].copy()
+    weight = 1.0
+    if channels >= 3:
+        left += 0.707 * frames[:, 2]
+        right += 0.707 * frames[:, 2]
+        weight += 0.707
+    for ch in range(4, channels - 1, 2):
+        left += 0.707 * frames[:, ch]
+        right += 0.707 * frames[:, ch + 1]
+        weight += 0.707
+    stereo = np.stack([left, right], axis=1) / weight
+    return np.clip(stereo, -32768, 32767).astype(np.int16).reshape(-1)
+
+
 def _require_pyaudio():
     if pyaudio is None:
         raise RuntimeError(
@@ -95,9 +120,11 @@ class _TrackWriter:
     # silence so the system track stays in step with the wall clock.
     GAP_FILL_SECONDS = 0.5
 
-    def __init__(self, info: TrackInfo, fill_gaps: bool):
+    def __init__(self, info: TrackInfo, fill_gaps: bool, in_channels: int | None = None):
         self.info = info
         self.fill_gaps = fill_gaps
+        # Channels the device delivers; more than info.channels means downmixing.
+        self.in_channels = in_channels or info.channels
         self.level = 0.0
         self.last_sound = time.monotonic()
         self._queue: queue.Queue[tuple[float, bytes] | None] = queue.Queue()
@@ -119,6 +146,9 @@ class _TrackWriter:
             if item is None:
                 break
             arrived, data = item
+            if self.in_channels > self.info.channels:
+                data = downmix_to_stereo(np.frombuffer(data, dtype=np.int16),
+                                         self.in_channels).tobytes()
             frames = len(data) // bytes_per_frame
             if self.info.first_frame_time is None:
                 # The callback fires once a buffer is full, so the first frame was
@@ -175,12 +205,15 @@ class Recorder:
         self.started_at = time.monotonic()
 
     def _open(self, name: str, device: Device, fill_gaps: bool):
-        channels = max(1, min(device.channels, 2))
+        # WASAPI loopback only opens at the device's own channel count (8 on a
+        # 7.1 headset), so capture natively and downmix to stereo when writing.
+        in_channels = max(1, device.channels)
+        channels = min(in_channels, 2)
         info = TrackInfo(self.session_dir / f"raw_{name}.wav", device.rate, channels)
-        writer = _TrackWriter(info, fill_gaps)
+        writer = _TrackWriter(info, fill_gaps, in_channels)
         stream = self._p.open(
             format=pyaudio.paInt16,
-            channels=channels,
+            channels=in_channels,
             rate=device.rate,
             input=True,
             input_device_index=device.index,
@@ -197,10 +230,14 @@ class Recorder:
         WASAPI loopback delivers nothing while no app is playing sound, which
         would leave holes in the system track. Playing silence keeps it flowing.
         """
+        # Match within WASAPI only: MME and DirectSound list the same speakers
+        # (MME truncates names to 31 characters) and come first in the list.
+        wasapi = self._p.get_host_api_info_by_type(pyaudio.paWASAPI)["index"]
         speaker_index = None
         for i in range(self._p.get_device_count()):
             info = self._p.get_device_info_by_index(i)
-            if (not info.get("isLoopbackDevice") and info["maxOutputChannels"] > 0
+            if (info["hostApi"] == wasapi and not info.get("isLoopbackDevice")
+                    and info["maxOutputChannels"] > 0
                     and info["name"] == self.output_device.name):
                 speaker_index = i
                 break
