@@ -54,6 +54,9 @@ def test_question_prompt_prefers_newer_calls_within_budget(tmp_path):
     assert "<transcript>\nnew words\n</transcript>" in prompt
     assert prompt.endswith("Question about these calls: What did we agree?")
     # A tight budget keeps the old call's notes but drops its transcript.
+    assert "The question is from" not in prompt
+    prompt, _ = history.build_question_prompt("q", calls, "Steve")
+    assert "The question is from Steve, who recorded these calls" in prompt
     prompt, count = history.build_question_prompt("q", calls, budget=320)
     assert count == 2 and "old words" not in prompt and "Old notes" in prompt
     _, count = history.build_question_prompt("q", calls, budget=150)

@@ -90,7 +90,7 @@ def search(calls: list[PastCall], query: str) -> list[PastCall]:
     return found
 
 
-def build_question_prompt(question: str, calls: list[PastCall],
+def build_question_prompt(question: str, calls: list[PastCall], user_name: str = "",
                           budget: int = ASK_BUDGET_CHARS) -> tuple[str, int]:
     """The prompt for a question about `calls`. Returns (prompt, number of calls included)."""
     parts, used = [], 0
@@ -108,14 +108,16 @@ def build_question_prompt(question: str, calls: list[PastCall],
         parts.append(block)
         used += len(block)
     calls_text = "\n\n".join(parts) if parts else "(no calls)"
-    prompt = (f"<calls>\n{calls_text}\n</calls>\n\n"
+    asker = (f"The question is from {user_name}, who recorded these calls (their microphone "
+             f'is labelled "{user_name}" in the transcripts).\n') if user_name else ""
+    prompt = (f"<calls>\n{calls_text}\n</calls>\n\n{asker}"
               f"Question about these calls: {question.strip()}")
     return prompt, len(parts)
 
 
 def ask(question: str, calls: list[PastCall], settings: Settings,
         on_text: Callable[[str], None] | None = None) -> str:
-    prompt, _ = build_question_prompt(question, calls)
+    prompt, _ = build_question_prompt(question, calls, getattr(settings, "user_name", ""))
     return summarize.ask_claude(prompt, system=ASK_SYSTEM_PROMPT,
                                 api_key=settings.anthropic_api_key,
                                 model=settings.claude_model, on_text=on_text, what="answer")
